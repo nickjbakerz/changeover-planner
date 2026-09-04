@@ -60,10 +60,10 @@ jobs:
         with:
           path: release-files
           merge-multiple: true
-      - name: Create prerelease and upload installers
+      - name: Create release and upload installers
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           mapfile -d '' files < <(find release-files -type f -print0)
-          gh release create "${GITHUB_REF_NAME}" "${files[@]}" --repo "${GITHUB_REPOSITORY}" --title "Changeover Planner ${GITHUB_REF_NAME}" --generate-notes --prerelease
+          gh release create "${GITHUB_REF_NAME}" "${files[@]}" --repo "${GITHUB_REPOSITORY}" --title "Changeover Planner ${GITHUB_REF_NAME}" --generate-notes --latest

@@ -186,9 +186,13 @@ function registerIpc() {
   ipcMain.handle('updates:check', async (event) => {
     validateSender(event);
     const repository = packageMetadata.changeoverPlanner?.updateRepository || 'nickjbakerz/changeover-planner';
-    const response = await fetch(`https://api.github.com/repos/${repository}/releases?per_page=20`, {
+    const releaseUrl = new URL(`https://api.github.com/repos/${repository}/releases`);
+    releaseUrl.searchParams.set('per_page', '20');
+    releaseUrl.searchParams.set('checked_at', String(Date.now()));
+    const response = await fetch(releaseUrl, {
       headers: {
         Accept: 'application/vnd.github+json',
+        'Cache-Control': 'no-cache',
         'User-Agent': `Changeover-Planner/${app.getVersion()}`,
         'X-GitHub-Api-Version': '2022-11-28'
       },

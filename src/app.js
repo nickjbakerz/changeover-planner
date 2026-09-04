@@ -41,7 +41,7 @@ let calculationStatus = 'up-to-date';
 let calculationTimer = null;
 let guideQuery = '';
 
-const APP_VERSION = '0.8.0';
+const APP_VERSION = '0.8.1';
 const icons = {
   overview: '🏠', plan: '📋', counts: '✓', statistics: '📊', print: '🖨', advanced: '⚙', help: '?'
 };
