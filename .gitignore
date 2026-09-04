@@ -1,0 +1,20 @@
+node_modules/
+out/
+outputs/
+work/
+tmp/
+.DS_Store
+*.log
+*.saving
+
+# Local extraction artifact; the application source is src/app.js.
+/app.js
+
+# Signing credentials and certificates must never enter Git.
+*.p12
+*.pfx
+*.cer
+*.key
+*.mobileprovision
+.env
+.env.*

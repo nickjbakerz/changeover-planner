@@ -1,0 +1,52 @@
+{
+  "name": "camp-changeover-planner",
+  "productName": "Changeover Planner",
+  "version": "0.8.0",
+  "description": "Offline camp equipment planning for weekly changeover.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nickjbakerz/changeover-planner.git"
+  },
+  "homepage": "https://github.com/nickjbakerz/changeover-planner",
+  "bugs": {
+    "url": "https://github.com/nickjbakerz/changeover-planner/issues"
+  },
+  "type": "module",
+  "main": "src/main.cjs",
+  "private": true,
+  "author": {
+    "name": "Nick Baker",
+    "email": "nickjbakerz@gmail.com",
+    "url": "https://github.com/nickjbakerz"
+  },
+  "license": "MIT",
+  "changeoverPlanner": {
+    "updatesEnabled": false,
+    "updateRepository": "nickjbakerz/changeover-planner"
+  },
+  "scripts": {
+    "start": "electron-forge start",
+    "package": "electron-forge package",
+    "make": "electron-forge make",
+    "make:mac:arm64": "electron-forge make --platform=darwin --arch=arm64",
+    "make:mac:intel": "electron-forge make --platform=darwin --arch=x64",
+    "make:windows": "electron-forge make --platform=win32 --arch=x64",
+    "make:linux": "electron-forge make --platform=linux --arch=x64",
+    "publish": "electron-forge publish",
+    "check": "node --check src/main.cjs && node --check src/preload.cjs && node --check src/app.js",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "electron-squirrel-startup": "^1.0.1",
+    "exceljs": "4.4.0",
+    "update-electron-app": "^3.3.0"
+  },
+  "devDependencies": {
+    "@electron-forge/cli": "7.11.2",
+    "@electron-forge/maker-dmg": "7.11.2",
+    "@electron-forge/maker-squirrel": "^7.11.2",
+    "@electron-forge/maker-zip": "7.11.2",
+    "@electron-forge/publisher-github": "^7.11.2",
+    "electron": "44.1.1"
+  }
+}
