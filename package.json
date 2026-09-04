@@ -33,7 +33,7 @@
     "make:windows": "electron-forge make --platform=win32 --arch=x64",
     "make:linux": "electron-forge make --platform=linux --arch=x64",
     "publish": "electron-forge publish",
-    "check": "node --check src/main.cjs && node --check src/preload.cjs && node --check src/app.js",
+    "check": "node --check src/main.cjs && node --check src/preload.cjs && node --check src/app.js && node scripts/verify-release.mjs",
     "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
