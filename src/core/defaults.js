@@ -165,6 +165,36 @@ function blankDistances(labels) {
   return values;
 }
 
+// Nick Baker's verified Camp Blackhawk walking-distance table, in feet.
+// These are template defaults only; every camp and new season keeps its own
+// editable copy after creation.
+const BLACKHAWK_DISTANCES = {
+  Wilderness: {
+    'site-1::site-2': 265, 'site-1::site-3': 555, 'site-1::site-4': 727, 'site-1::site-5': 488,
+    'site-1::site-6': 483, 'site-1::site-7': 296, 'site-1::site-8': 526, 'site-2::site-3': 306,
+    'site-2::site-4': 528, 'site-2::site-5': 396, 'site-2::site-6': 406, 'site-2::site-7': 523,
+    'site-2::site-8': 756, 'site-3::site-4': 219, 'site-3::site-5': 611, 'site-3::site-6': 734,
+    'site-3::site-7': 819, 'site-3::site-8': 1056, 'site-4::site-5': 606, 'site-4::site-6': 744,
+    'site-4::site-7': 954, 'site-4::site-8': 1200, 'site-5::site-6': 212, 'site-5::site-7': 442,
+    'site-5::site-8': 779, 'site-6::site-7': 231, 'site-6::site-8': 485, 'site-7::site-8': 251
+  },
+  Checagau: {
+    'site-10::site-9': 268, 'site-11::site-9': 414, 'site-12::site-9': 725, 'site-13::site-9': 888,
+    'site-14::site-9': 652, 'site-15::site-9': 605, 'site-10::site-11': 160, 'site-10::site-12': 475,
+    'site-10::site-13': 647, 'site-10::site-14': 436, 'site-10::site-15': 371, 'site-11::site-12': 308,
+    'site-11::site-13': 486, 'site-11::site-14': 383, 'site-11::site-15': 317, 'site-12::site-13': 168,
+    'site-12::site-14': 338, 'site-12::site-15': 479, 'site-13::site-14': 462, 'site-13::site-15': 603,
+    'site-14::site-15': 140
+  },
+  Pioneer: {
+    'site-16::site-17': 603, 'site-16::site-18': 1005, 'site-16::site-19': 680,
+    'site-16::site-20': 462, 'site-16::site-21': 1005, 'site-17::site-18': 795,
+    'site-17::site-19': 960, 'site-17::site-20': 972, 'site-17::site-21': 350,
+    'site-18::site-19': 536, 'site-18::site-20': 1302, 'site-18::site-21': 834,
+    'site-19::site-20': 915, 'site-19::site-21': 1083, 'site-20::site-21': 1539
+  }
+};
+
 export function distanceKey(a, b) {
   return [String(a), String(b)].sort().join('::');
 }
@@ -183,7 +213,7 @@ export function createBlackhawkCamp() {
       id: `hill-${name.toLowerCase()}`,
       name,
       sites: labels.map((label) => ({ id: `site-${label}`, label })),
-      distances: blankDistances(labels)
+      distances: { ...blankDistances(labels), ...BLACKHAWK_DISTANCES[name] }
     }))
   });
   camp.id = 'camp-blackhawk';

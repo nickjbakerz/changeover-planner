@@ -47,6 +47,10 @@ test('Blackhawk defaults preserve the corrected hill name and 21 sites', () => {
   assert.deepEqual(camp.hills.map((hill) => hill.name), ['Wilderness', 'Checagau', 'Pioneer']);
   assert.equal(camp.hills.flatMap((hill) => hill.sites).length, 21);
   assert.equal(camp.weeks.length, 7);
+  assert.equal(camp.hills.reduce((total, hill) => total + Object.values(hill.distances).filter(Number.isFinite).length, 0), 64);
+  assert.equal(camp.hills[0].distances[distanceKey('site-4', 'site-8')], 1200);
+  assert.equal(camp.hills[1].distances[distanceKey('site-9', 'site-15')], 605);
+  assert.equal(camp.hills[2].distances[distanceKey('site-20', 'site-21')], 1539);
 });
 
 test('zero requested tents with requested cots adds one storage tent', () => {
