@@ -4,7 +4,7 @@ const fsSync = require('node:fs');
 const path = require('node:path');
 const ExcelJS = require('exceljs');
 const packageMetadata = require('../package.json');
-const { compareVersions, latestRelease, selectDownloadAsset } = require('./core/updates.cjs');
+const { compareVersions, selectDownloadAsset } = require('./core/updates.cjs');
 
 if (require('electron-squirrel-startup')) app.quit();
 
@@ -186,8 +186,7 @@ function registerIpc() {
   ipcMain.handle('updates:check', async (event) => {
     validateSender(event);
     const repository = packageMetadata.changeoverPlanner?.updateRepository || 'nickjbakerz/changeover-planner';
-    const releaseUrl = new URL(`https://api.github.com/repos/${repository}/releases`);
-    releaseUrl.searchParams.set('per_page', '20');
+    const releaseUrl = new URL(`https://api.github.com/repos/${repository}/releases/latest`);
     releaseUrl.searchParams.set('checked_at', String(Date.now()));
     const response = await fetch(releaseUrl, {
       headers: {
@@ -198,9 +197,9 @@ function registerIpc() {
       },
       signal: AbortSignal.timeout(15000)
     });
-    if (!response.ok) throw new Error(response.status === 404 ? 'No public releases are available yet.' : `GitHub could not be reached (status ${response.status}).`);
-    const release = latestRelease(await response.json());
-    if (!release) return { currentVersion: app.getVersion(), release: null, updateAvailable: false };
+    if (response.status === 404) return { currentVersion: app.getVersion(), release: null, updateAvailable: false };
+    if (!response.ok) throw new Error(`GitHub could not be reached (status ${response.status}).`);
+    const release = await response.json();
     const latestVersion = String(release.tag_name).replace(/^v/i, '');
     const asset = selectDownloadAsset(release, process.platform, process.arch);
     return {
