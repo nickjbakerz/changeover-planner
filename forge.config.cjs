@@ -1,3 +1,5 @@
+const path = require('node:path');
+
 module.exports = {
   packagerConfig: {
     asar: true,
@@ -9,6 +11,7 @@ module.exports = {
     executableName: 'Changeover Planner',
     appBundleId: 'org.campchangeover.planner',
     appCategoryType: 'public.app-category.productivity',
+    icon: path.resolve(__dirname, 'src/assets/app-icon'),
     download: {
       cacheRoot: './work/electron-cache'
     }
@@ -21,7 +24,9 @@ module.exports = {
       config: {
         name: 'ChangeoverPlanner',
         authors: 'Nick Baker',
-        description: 'Offline camp equipment planning for weekly changeover.'
+        description: 'Offline camp equipment planning for weekly changeover.',
+        setupIcon: path.resolve(__dirname, 'src/assets/app-icon.ico'),
+        iconUrl: 'https://raw.githubusercontent.com/nickjbakerz/changeover-planner/main/src/assets/app-icon.ico'
       }
     },
     {

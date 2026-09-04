@@ -1037,7 +1037,7 @@ function renderDataSafety(camp) {
 }
 
 function renderUpdatesAbout() {
-  return `<div class="grid two"><section class="card card-pad"><h2>Software updates</h2><p class="subtitle">Version ${APP_VERSION} is an alpha-testing build. Automatic updates will be enabled after the official project repository and signed release packages exist.</p><div class="notice info section"><span class="notice-icon">i</span><div><strong>Your camp data is separate from the application</strong><p>Future application updates are designed to preserve camps, weeks, counts, settings, and walking distances. Export a Complete Backup before every update.</p></div></div></section><section class="card card-pad"><h2>About Changeover Planner</h2><p class="subtitle">Created by Nick Baker for offline camp equipment planning.</p><div class="setting-row"><div class="setting-copy"><strong>Email or text for help</strong><p><a href="mailto:nickjbakerz@gmail.com">nickjbakerz@gmail.com</a><br><a href="tel:+17089372419">708-937-2419</a></p></div></div><div class="button-row section about-social-links"><a class="btn" href="https://github.com/nickjbakerz" target="_blank" rel="noreferrer">GitHub</a><a class="btn" href="https://www.linkedin.com/in/nickjbakerz/" target="_blank" rel="noreferrer">LinkedIn</a><a class="btn" href="https://www.instagram.com/nickjbakerz/" target="_blank" rel="noreferrer">Instagram</a></div></section></div>`;
+  return `<div class="grid two"><section class="card card-pad"><h2>Software updates</h2><p class="subtitle">You are using Version ${APP_VERSION}, an alpha-testing build.</p><div class="button-row section"><button class="btn primary" data-action="check-for-updates">Check for updates</button></div><div class="notice info section"><span class="notice-icon">i</span><div><strong>Free test-build updates</strong><p>The app checks Nick’s official public GitHub releases and chooses the download for this computer. Because these free builds are not signed by Apple or Microsoft, the operating system may show a security warning and the downloaded update must be opened manually.</p></div></div><div class="notice info section"><span class="notice-icon">i</span><div><strong>Your camp data is separate from the application</strong><p>Installing a newer application build is designed to preserve camps, weeks, counts, settings, and walking distances. Export a Complete Backup before every update for extra protection.</p></div></div></section><section class="card card-pad"><h2>About Changeover Planner</h2><p class="subtitle">Created by Nick Baker for offline camp equipment planning.</p><div class="setting-row"><div class="setting-copy"><strong>Email or text for help</strong><p><a href="mailto:nickjbakerz@gmail.com">nickjbakerz@gmail.com</a><br><a href="tel:+17089372419">708-937-2419</a></p></div></div><div class="button-row section about-social-links"><a class="btn" href="https://github.com/nickjbakerz/changeover-planner" target="_blank" rel="noreferrer">GitHub project</a><a class="btn" href="https://www.linkedin.com/in/nickjbakerz/" target="_blank" rel="noreferrer">LinkedIn</a><a class="btn" href="https://www.instagram.com/nickjbakerz/" target="_blank" rel="noreferrer">Instagram</a></div></section></div>`;
 }
 
 function renderHelp() {
@@ -1425,6 +1425,48 @@ function importPreview(imported, path) {
   modalRoot.dataset.pendingImport = JSON.stringify(imported);
 }
 
+async function checkForUpdates(button) {
+  if (!window.campDesktop?.checkForUpdates) {
+    showToast('Update checking is available in the installed desktop app.', true);
+    return;
+  }
+  const originalLabel = button.textContent;
+  button.disabled = true;
+  button.textContent = 'Checking…';
+  try {
+    const result = await window.campDesktop.checkForUpdates();
+    if (!result.release) {
+      showModal({
+        title: 'No public releases yet',
+        body: '<p>This public project does not have a downloadable release yet. Try again after Nick publishes the first test build.</p>',
+        actions: [{ label: 'Close', action: 'close-modal', className: 'primary' }]
+      });
+    } else if (!result.updateAvailable) {
+      showModal({
+        title: 'Changeover Planner is up to date',
+        body: `<p>This computer has Version <strong>${escapeHtml(result.currentVersion)}</strong>. The newest public release is Version <strong>${escapeHtml(result.latestVersion)}</strong>.</p>`,
+        actions: [{ label: 'Close', action: 'close-modal', className: 'primary' }]
+      });
+    } else {
+      showModal({
+        title: 'An update is available',
+        body: `<p>Version <strong>${escapeHtml(result.latestVersion)}</strong> is available. You currently have Version ${escapeHtml(result.currentVersion)}.</p><p>${result.assetName ? `The correct download for this computer is <strong>${escapeHtml(result.assetName)}</strong>.` : 'The GitHub release page will open so you can choose a download.'}</p><div class="notice warn section"><span class="notice-icon">!</span><div><strong>Install manually</strong><p>Open the download and replace the older app. Your saved camp information is stored separately, but exporting a Complete Backup first is recommended.</p></div></div>`,
+        actions: [{ label: 'Later', action: 'close-modal' }, { label: 'Download update', action: 'download-update', className: 'primary' }]
+      });
+      modalRoot.dataset.updateUrl = result.downloadUrl;
+    }
+  } catch (error) {
+    showModal({
+      title: 'Could not check for updates',
+      body: `<p>${escapeHtml(error?.message || 'GitHub could not be reached. Check the internet connection and try again.')}</p>`,
+      actions: [{ label: 'Close', action: 'close-modal', className: 'primary' }]
+    });
+  } finally {
+    button.disabled = false;
+    button.textContent = originalLabel;
+  }
+}
+
 appElement.addEventListener('click', async (event) => {
   const configTarget = event.target.closest('[data-config-page]');
   if (configTarget) { route = 'advanced'; advancedTab = configTarget.dataset.configPage; render(); return; }
@@ -1439,6 +1481,7 @@ appElement.addEventListener('click', async (event) => {
   const week = activeWeek();
   if (action === 'calculate-plan') calculatePlan();
   else if (action === 'save-now') await saveNow();
+  else if (action === 'check-for-updates') await checkForUpdates(actionTarget);
   else if (action === 'toggle-theme') {
     state.theme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'; applyTheme(); queueSave(); render();
   } else if (action === 'zoom-in' || action === 'zoom-out') {
@@ -1712,6 +1755,16 @@ modalRoot.addEventListener('click', async (event) => {
   if (!target) return;
   const action = target.dataset.action;
   if (action === 'close-modal') closeModal();
+  else if (action === 'download-update') {
+    const updateUrl = modalRoot.dataset.updateUrl;
+    try {
+      await window.campDesktop.openUpdateDownload(updateUrl);
+      closeModal();
+      showToast('Opening the official update download…');
+    } catch (error) {
+      showToast(error?.message || 'The update link could not be opened.', true);
+    }
+  }
   else if (action === 'go-counts') { closeModal(); route = 'counts'; render(); }
   else if (action === 'confirm-override') { closeModal(); calculatePlan(true); }
   else if (action === 'go-distances') { closeModal(); route = 'advanced'; advancedTab = 'distances'; render(); }

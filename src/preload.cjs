@@ -10,5 +10,7 @@ contextBridge.exposeInMainWorld('campDesktop', {
   exportPdf: (options) => ipcRenderer.invoke('pdf:export', options),
   openPrintDialog: (options) => ipcRenderer.invoke('print:open-dialog', options),
   setZoom: (percent) => ipcRenderer.invoke('view:set-zoom', percent),
-  revealPath: (path) => ipcRenderer.invoke('path:reveal', path)
+  revealPath: (path) => ipcRenderer.invoke('path:reveal', path),
+  checkForUpdates: () => ipcRenderer.invoke('updates:check'),
+  openUpdateDownload: (url) => ipcRenderer.invoke('updates:open-download', url)
 });

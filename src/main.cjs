@@ -4,6 +4,7 @@ const fsSync = require('node:fs');
 const path = require('node:path');
 const ExcelJS = require('exceljs');
 const packageMetadata = require('../package.json');
+const { compareVersions, latestRelease, selectDownloadAsset } = require('./core/updates.cjs');
 
 if (require('electron-squirrel-startup')) app.quit();
 
@@ -180,6 +181,44 @@ function registerIpc() {
     const safePercent = Math.min(150, Math.max(80, Number(percent) || 100));
     event.sender.setZoomFactor(safePercent / 100);
     return { percent: safePercent };
+  });
+
+  ipcMain.handle('updates:check', async (event) => {
+    validateSender(event);
+    const repository = packageMetadata.changeoverPlanner?.updateRepository || 'nickjbakerz/changeover-planner';
+    const response = await fetch(`https://api.github.com/repos/${repository}/releases?per_page=20`, {
+      headers: {
+        Accept: 'application/vnd.github+json',
+        'User-Agent': `Changeover-Planner/${app.getVersion()}`,
+        'X-GitHub-Api-Version': '2022-11-28'
+      },
+      signal: AbortSignal.timeout(15000)
+    });
+    if (!response.ok) throw new Error(response.status === 404 ? 'No public releases are available yet.' : `GitHub could not be reached (status ${response.status}).`);
+    const release = latestRelease(await response.json());
+    if (!release) return { currentVersion: app.getVersion(), release: null, updateAvailable: false };
+    const latestVersion = String(release.tag_name).replace(/^v/i, '');
+    const asset = selectDownloadAsset(release, process.platform, process.arch);
+    return {
+      currentVersion: app.getVersion(),
+      latestVersion,
+      updateAvailable: compareVersions(latestVersion, app.getVersion()) > 0,
+      releaseName: release.name || release.tag_name,
+      prerelease: Boolean(release.prerelease),
+      releasePageUrl: release.html_url,
+      assetName: asset?.name || null,
+      downloadUrl: asset?.browser_download_url || release.html_url
+    };
+  });
+
+  ipcMain.handle('updates:open-download', async (event, targetUrl) => {
+    validateSender(event);
+    const parsed = new URL(String(targetUrl || ''));
+    if (parsed.protocol !== 'https:' || parsed.hostname !== 'github.com' || !parsed.pathname.startsWith('/nickjbakerz/changeover-planner/releases/')) {
+      throw new Error('The update link was not recognized as an official Changeover Planner release.');
+    }
+    await shell.openExternal(parsed.href);
+    return { opened: true };
   });
 
   ipcMain.handle('print:open-dialog', async (event, options = {}) => {

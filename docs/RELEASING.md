@@ -13,11 +13,9 @@ This is the beginner-safe release checklist. The application data stored on each
 
 ## First GitHub upload
 
-1. Decide whether the repository will be public or private. Public is required for the free Electron update service.
-2. Create an empty GitHub repository named `changeover-planner` under `nickjbakerz`. Do not initialize it with a README because this folder already has one.
-3. Connect this local repository to that GitHub repository.
-4. Push the `main` branch.
-5. Open the Actions tab on GitHub and confirm that **Checks** passes.
+1. Use the public `nickjbakerz/changeover-planner` repository. It was created without GitHub-generated starter files because this folder already contains the project history and README.
+2. Push the `main` branch.
+3. Open the Actions tab on GitHub and confirm that **Checks** passes.
 
 ## Creating an alpha release
 
@@ -29,9 +27,15 @@ This is the beginner-safe release checklist. The application data stored on each
 
 Never place Apple certificates, Windows certificates, passwords, tokens, or `.env` files in the repository.
 
-## Automatic-update gate
+## Updates in free alpha builds
 
-The updater wiring is present, but `changeoverPlanner.updatesEnabled` remains `false`. Do not switch it on until all of these are true:
+Updates & About checks the public GitHub Releases list, compares versions, and opens the correct download for the current platform and processor. It includes public prereleases because the application is still in alpha testing. The commissioner then opens the downloaded package and replaces the older application manually. Working camp data is kept outside the application, but a Complete Backup should still be exported first.
+
+This download-assisted workflow is the safe free approach for unsigned test builds. macOS Gatekeeper and Windows SmartScreen may warn testers because the packages do not have paid platform signing certificates.
+
+## Native automatic-update gate
+
+The separate native in-place updater wiring is present, but `changeoverPlanner.updatesEnabled` remains `false`. Do not switch it on until all of these are true:
 
 - The GitHub repository is public.
 - At least one correctly tagged, non-draft, non-prerelease release exists.
