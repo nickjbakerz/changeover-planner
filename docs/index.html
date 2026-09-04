@@ -41,7 +41,6 @@
     </section>
 
     <section class="recommendation" id="recommendation" hidden aria-live="polite">
-      <span class="recommendation-icon" aria-hidden="true">✓</span>
       <div>
         <strong id="recommendation-title">Recommended for this computer</strong>
         <span id="recommendation-copy"></span>
@@ -56,7 +55,11 @@
 
       <div class="download-grid">
         <article class="download-card" data-platform-card="windows">
-          <div class="platform-icon windows-icon" aria-hidden="true">🪟</div>
+          <div class="platform-icon windows-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" focusable="false">
+              <path d="M3.5 4.5 10.7 3.5v7.7H3.5V4.5Zm8.8-1.2 8.2-1.1v9h-8.2V3.3ZM3.5 12.8h7.2v7.7l-7.2-1v-6.7Zm8.8 0h8.2v9l-8.2-1.1v-7.9Z"/>
+            </svg>
+          </div>
           <p class="platform-kicker">Most common choice</p>
           <h3>Windows</h3>
           <p>Normal setup program for a 64-bit Windows computer.</p>
@@ -77,7 +80,12 @@
         </article>
 
         <article class="download-card" data-platform-card="mac">
-          <div class="platform-icon apple-icon" aria-hidden="true">🍎</div>
+          <div class="platform-icon apple-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" focusable="false">
+              <rect x="4" y="4" width="16" height="11" rx="1.5"/>
+              <path d="M2.5 19.5h19M9 19.5l.8-2h4.4l.8 2"/>
+            </svg>
+          </div>
           <p class="platform-kicker">Two Mac versions</p>
           <h3>Mac</h3>
           <p>Choose the chip shown under Apple menu → About This Mac.</p>
@@ -103,7 +111,12 @@
         </article>
 
         <article class="download-card" data-platform-card="linux">
-          <div class="platform-icon linux-icon" aria-hidden="true">🐧</div>
+          <div class="platform-icon linux-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" focusable="false">
+              <rect x="3" y="4" width="18" height="16" rx="2"/>
+              <path d="m7 9 3 3-3 3M12.5 15H17"/>
+            </svg>
+          </div>
           <p class="platform-kicker">For Linux testers</p>
           <h3>Linux</h3>
           <p>Portable 64-bit application. No system-wide installer is required.</p>

@@ -13,6 +13,11 @@ test('the public download page gives each supported computer an obvious download
   assert.match(page, /Download for Linux/);
   assert.match(page, /About the security warning/);
   assert.match(page, /publisher’s identity/);
+  assert.doesNotMatch(page, /🪟|🍎|🐧/);
+  assert.doesNotMatch(page, /recommendation-icon/);
+  assert.match(page, /class="platform-icon windows-icon"/);
+  assert.match(page, /class="platform-icon apple-icon"/);
+  assert.match(page, /class="platform-icon linux-icon"/);
 });
 
 test('the download page discovers the newest official GitHub release', () => {

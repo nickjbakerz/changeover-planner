@@ -164,17 +164,6 @@ h1 {
   background: var(--mint-100);
   color: var(--forest-900);
 }
-.recommendation-icon {
-  width: 2.1rem;
-  height: 2.1rem;
-  display: grid;
-  place-items: center;
-  flex: none;
-  border-radius: 50%;
-  background: var(--forest-800);
-  color: #fff;
-  font-weight: 900;
-}
 .recommendation strong,
 .recommendation span { display: block; }
 .recommendation div > span { color: var(--muted); }
@@ -228,8 +217,19 @@ h2 {
   border-radius: 0.9rem;
   background: var(--forest-950);
   color: #fff;
-  font-size: 1.8rem;
-  font-weight: 800;
+}
+.platform-icon svg {
+  width: 1.8rem;
+  height: 1.8rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.windows-icon svg {
+  fill: currentColor;
+  stroke: none;
 }
 .platform-kicker {
   margin-bottom: 0.25rem;
