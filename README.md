@@ -1,5 +1,13 @@
 # Changeover Planner
 
+## Download
+
+Use the friendly download page to choose the correct Windows, Mac, or Linux version:
+
+**[Download Changeover Planner](https://nickjbakerz.github.io/changeover-planner/)**
+
+No GitHub account is required. The page also includes plain-language help for the unsigned alpha-build security warnings shown by Windows and macOS.
+
 An offline desktop application for planning weekly summer-camp equipment changeover. It keeps the familiar paper grid while calculating same-hill tent, cot, and floorboard movements behind the scenes.
 
 ## Included in this build
