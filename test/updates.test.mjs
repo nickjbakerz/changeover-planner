@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { compareVersions, latestRelease, selectDownloadAsset } = require('../src/core/updates.cjs');
+const { buildUpdateResult, compareVersions, latestRelease, selectDownloadAsset } = require('../src/core/updates.cjs');
 
 test('release versions compare numerically and understand prereleases', () => {
   assert.equal(compareVersions('v0.9.0', '0.8.10'), 1);
@@ -33,4 +33,25 @@ test('the correct package is selected for each supported computer', () => {
   assert.match(selectDownloadAsset(release, 'darwin', 'x64').name, /x64\.dmg$/);
   assert.match(selectDownloadAsset(release, 'win32', 'x64').name, /Setup\.exe$/);
   assert.match(selectDownloadAsset(release, 'linux', 'x64').name, /linux-x64/);
+});
+
+test('a successful release check is distinguishable from a missing release', () => {
+  const release = {
+    tag_name: 'v0.8.3',
+    name: 'Changeover Planner v0.8.3',
+    html_url: 'https://github.com/nickjbakerz/changeover-planner/releases/tag/v0.8.3',
+    prerelease: false,
+    assets: [{
+      name: 'Changeover.Planner-0.8.3-arm64.dmg',
+      browser_download_url: 'https://github.com/nickjbakerz/changeover-planner/releases/download/v0.8.3/Changeover.Planner-0.8.3-arm64.dmg'
+    }]
+  };
+  const found = buildUpdateResult(release, '0.8.2', 'darwin', 'arm64');
+  assert.equal(found.release.tagName, 'v0.8.3');
+  assert.equal(found.updateAvailable, true);
+  assert.equal(found.assetName, 'Changeover.Planner-0.8.3-arm64.dmg');
+
+  const missing = buildUpdateResult(null, '0.8.2', 'darwin', 'arm64');
+  assert.equal(missing.release, null);
+  assert.equal(missing.updateAvailable, false);
 });

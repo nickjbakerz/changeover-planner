@@ -4,7 +4,7 @@ const fsSync = require('node:fs');
 const path = require('node:path');
 const ExcelJS = require('exceljs');
 const packageMetadata = require('../package.json');
-const { compareVersions, selectDownloadAsset } = require('./core/updates.cjs');
+const { buildUpdateResult } = require('./core/updates.cjs');
 
 if (require('electron-squirrel-startup')) app.quit();
 
@@ -197,21 +197,10 @@ function registerIpc() {
       },
       signal: AbortSignal.timeout(15000)
     });
-    if (response.status === 404) return { currentVersion: app.getVersion(), release: null, updateAvailable: false };
+    if (response.status === 404) return buildUpdateResult(null, app.getVersion(), process.platform, process.arch);
     if (!response.ok) throw new Error(`GitHub could not be reached (status ${response.status}).`);
     const release = await response.json();
-    const latestVersion = String(release.tag_name).replace(/^v/i, '');
-    const asset = selectDownloadAsset(release, process.platform, process.arch);
-    return {
-      currentVersion: app.getVersion(),
-      latestVersion,
-      updateAvailable: compareVersions(latestVersion, app.getVersion()) > 0,
-      releaseName: release.name || release.tag_name,
-      prerelease: Boolean(release.prerelease),
-      releasePageUrl: release.html_url,
-      assetName: asset?.name || null,
-      downloadUrl: asset?.browser_download_url || release.html_url
-    };
+    return buildUpdateResult(release, app.getVersion(), process.platform, process.arch);
   });
 
   ipcMain.handle('updates:open-download', async (event, targetUrl) => {

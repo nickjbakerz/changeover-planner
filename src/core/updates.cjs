@@ -44,4 +44,27 @@ function selectDownloadAsset(release, platform, arch) {
   return null;
 }
 
-module.exports = { compareVersions, latestRelease, selectDownloadAsset };
+function buildUpdateResult(release, currentVersion, platform, arch) {
+  if (!release) {
+    return { currentVersion, release: null, updateAvailable: false };
+  }
+  const latestVersion = String(release.tag_name || '').replace(/^v/i, '');
+  const asset = selectDownloadAsset(release, platform, arch);
+  return {
+    currentVersion,
+    latestVersion,
+    updateAvailable: compareVersions(latestVersion, currentVersion) > 0,
+    release: {
+      tagName: release.tag_name,
+      name: release.name || release.tag_name,
+      prerelease: Boolean(release.prerelease)
+    },
+    releaseName: release.name || release.tag_name,
+    prerelease: Boolean(release.prerelease),
+    releasePageUrl: release.html_url,
+    assetName: asset?.name || null,
+    downloadUrl: asset?.browser_download_url || release.html_url
+  };
+}
+
+module.exports = { buildUpdateResult, compareVersions, latestRelease, selectDownloadAsset };
