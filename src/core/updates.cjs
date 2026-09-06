@@ -36,7 +36,7 @@ function selectDownloadAsset(release, platform, arch) {
     return find(`-${arch}.dmg`) || find('darwin', arch, '.zip') || find(arch, '.dmg') || null;
   }
   if (platform === 'win32') {
-    return find('setup', '.exe') || find('win32', arch, '.zip') || find('windows', arch, '.zip') || null;
+    return find('windows', 'installer', '.msi') || find('.msi') || find('windows', 'portable', '.zip') || find('win32', arch, '.zip') || null;
   }
   if (platform === 'linux') {
     return find('linux', arch, '.zip') || find('linux', '.zip') || null;

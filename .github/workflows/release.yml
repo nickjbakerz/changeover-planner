@@ -44,6 +44,10 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
       - run: pnpm test
+      - name: Install WiX Toolset
+        if: matrix.platform == 'win32'
+        shell: powershell
+        run: choco install wixtoolset --version=3.14.0 -y --no-progress
       - run: pnpm exec electron-forge make --platform=${{ matrix.platform }} --arch=${{ matrix.arch }}
       - uses: actions/upload-artifact@v4
         with:
@@ -67,7 +71,8 @@ jobs:
         run: |
           cp "$(find release-files -type f -name '*-arm64.dmg' -print -quit)" release-files/Changeover-Planner-Mac-Apple-Silicon.dmg
           cp "$(find release-files -type f -name '*-x64.dmg' -print -quit)" release-files/Changeover-Planner-Mac-Intel.dmg
-          cp "$(find release-files -type f -name '*Setup.exe' -print -quit)" release-files/Changeover-Planner-Windows-Setup.exe
+          cp "$(find release-files -type f -name '*.msi' -print -quit)" release-files/Changeover-Planner-Windows-Installer.msi
+          cp "$(find release-files -type f -name '*win32-x64*.zip' -print -quit)" release-files/Changeover-Planner-Windows-Portable.zip
           cp "$(find release-files -type f -name '*linux-x64*.zip' -print -quit)" release-files/Changeover-Planner-Linux-x64.zip
           mapfile -d '' files < <(find release-files -type f -print0)
           gh release create "${GITHUB_REF_NAME}" "${files[@]}" --repo "${GITHUB_REPOSITORY}" --title "Changeover Planner ${GITHUB_REF_NAME}" --generate-notes --latest

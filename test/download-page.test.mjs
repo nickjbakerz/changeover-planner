@@ -28,7 +28,8 @@ test('the download page discovers the newest official GitHub release', () => {
 
 test('future releases publish stable friendly download filenames', () => {
   for (const name of [
-    'Changeover-Planner-Windows-Setup.exe',
+    'Changeover-Planner-Windows-Installer.msi',
+    'Changeover-Planner-Windows-Portable.zip',
     'Changeover-Planner-Mac-Apple-Silicon.dmg',
     'Changeover-Planner-Mac-Intel.dmg',
     'Changeover-Planner-Linux-x64.zip'

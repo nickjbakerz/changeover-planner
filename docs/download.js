@@ -2,7 +2,7 @@ const repository = 'nickjbakerz/changeover-planner';
 const releaseApi = `https://api.github.com/repos/${repository}/releases/latest`;
 
 const assetRules = {
-  windows: (name) => /\.Setup\.exe$/i.test(name) || /Windows-Setup\.exe$/i.test(name),
+  windows: (name) => /Windows-Installer\.msi$/i.test(name),
   macArm: (name) => /arm64\.dmg$/i.test(name) || /Mac-Apple-Silicon\.dmg$/i.test(name),
   macIntel: (name) => /x64\.dmg$/i.test(name) || /Mac-Intel\.dmg$/i.test(name),
   linux: (name) => /linux-x64.*\.zip$/i.test(name) || /Linux-x64\.zip$/i.test(name)
@@ -30,12 +30,12 @@ async function loadLatestRelease() {
     const release = await response.json();
     const version = String(release.tag_name || '').replace(/^v/i, '');
     document.getElementById('release-status').textContent = `Latest release: Version ${version}`;
-    setDownload('windows', 'download-windows', 'meta-windows', release, `Version ${version} · EXE installer`);
+    setDownload('windows', 'download-windows', 'meta-windows', release, `Version ${version} · Windows installer`);
     setDownload('macArm', 'download-mac-arm', 'meta-mac-arm', release, `Apple Silicon · Version ${version}`);
     setDownload('macIntel', 'download-mac-intel', 'meta-mac-intel', release, `Intel · Version ${version}`);
     setDownload('linux', 'download-linux', 'meta-linux', release, `Version ${version} · ZIP package`);
   } catch {
-    document.getElementById('release-status').textContent = 'Version 0.8.3 is ready to download';
+    document.getElementById('release-status').textContent = 'Version 0.10.1 is ready to download';
   }
 }
 
@@ -45,7 +45,7 @@ function recommendForComputer() {
   let copy = '';
   if (agent.includes('windows')) {
     platform = 'windows';
-    copy = 'Choose Download for Windows below.';
+    copy = 'Choose Download for Windows below and open the installer.';
   } else if (agent.includes('macintosh') || agent.includes('mac os')) {
     platform = 'mac';
     copy = 'Choose Apple Silicon or Intel using About This Mac.';

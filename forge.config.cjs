@@ -19,14 +19,15 @@ module.exports = {
   rebuildConfig: {},
   makers: [
     {
-      name: '@electron-forge/maker-squirrel',
+      name: '@electron-forge/maker-wix',
       platforms: ['win32'],
       config: {
-        name: 'ChangeoverPlanner',
-        authors: 'Nick Baker',
-        description: 'Offline camp equipment planning for weekly changeover.',
-        setupIcon: path.resolve(__dirname, 'src/assets/app-icon.ico'),
-        iconUrl: 'https://raw.githubusercontent.com/nickjbakerz/changeover-planner/main/src/assets/app-icon.ico'
+        manufacturer: 'Nick Baker',
+        language: 1033,
+        exe: 'Changeover Planner.exe',
+        icon: path.resolve(__dirname, 'src/assets/app-icon.ico'),
+        defaultInstallMode: 'perUser',
+        ui: { chooseDirectory: true }
       }
     },
     {

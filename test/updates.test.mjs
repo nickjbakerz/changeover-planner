@@ -27,11 +27,11 @@ test('the correct package is selected for each supported computer', () => {
     { name: 'Changeover Planner-0.8.0-x64.dmg' },
     { name: 'Changeover Planner-win32-x64-0.8.0.zip' },
     { name: 'Changeover Planner-linux-x64-0.8.0.zip' },
-    { name: 'ChangeoverPlannerSetup.exe' }
+    { name: 'Changeover-Planner-Windows-Installer.msi' }
   ] };
   assert.match(selectDownloadAsset(release, 'darwin', 'arm64').name, /arm64\.dmg$/);
   assert.match(selectDownloadAsset(release, 'darwin', 'x64').name, /x64\.dmg$/);
-  assert.match(selectDownloadAsset(release, 'win32', 'x64').name, /Setup\.exe$/);
+  assert.match(selectDownloadAsset(release, 'win32', 'x64').name, /Installer\.msi$/);
   assert.match(selectDownloadAsset(release, 'linux', 'x64').name, /linux-x64/);
 });
 
