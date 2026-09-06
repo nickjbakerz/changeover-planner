@@ -12,6 +12,13 @@ module.exports = {
     appBundleId: 'org.campchangeover.planner',
     appCategoryType: 'public.app-category.productivity',
     icon: path.resolve(__dirname, 'src/assets/app-icon'),
+    // Free test builds use a complete ad-hoc bundle signature. This gives
+    // Gatekeeper a structurally valid app bundle without requiring a paid
+    // Developer ID certificate or changing system-wide security settings.
+    osxSign: {
+      identity: '-',
+      identityValidation: false
+    },
     download: {
       cacheRoot: './work/electron-cache'
     }

@@ -51,7 +51,7 @@ let redoStack = [];
 let pendingEditHistory = null;
 const HISTORY_LIMIT = 100;
 
-const APP_VERSION = '0.10.3';
+const APP_VERSION = '0.10.4';
 const icons = {
   overview: '🏠', plan: '📋', counts: '✓', statistics: '📊', print: '🖨', advanced: '⚙', help: '?'
 };
