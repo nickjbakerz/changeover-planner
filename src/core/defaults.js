@@ -1,4 +1,6 @@
-export const DATA_VERSION = 8;
+import { normalizeAttendance, OPTIONAL_PRINT_COLUMNS, WEEKLY_FIELDS } from './attendance.js';
+
+export const DATA_VERSION = 12;
 
 export const DEFAULT_COLUMNS = [
   { id: 'site', label: 'Site', help: 'The campsite name or number.', visible: true, locked: true },
@@ -24,6 +26,8 @@ export const DEFAULT_PRINT_SETTINGS = {
   showResponsible: false,
   showStakes: true,
   showNotes: true,
+  showHillDifficulty: true,
+  showHillWalking: true,
   commandOrganization: 'waves-jobs',
   showTroopFields: true,
   commandLayout: {
@@ -63,7 +67,7 @@ export function makeId(prefix = 'id') {
 }
 
 export function createSiteWeek(site, weekNumber) {
-  return {
+  return normalizeAttendance({
     siteId: site.id,
     weekNumber,
     occupancy: 'troop',
@@ -102,7 +106,7 @@ export function createSiteWeek(site, weekNumber) {
     specialRequest: '',
     countNote: '',
     responsible: ''
-  };
+  });
 }
 
 function createWeek(number, sites) {
@@ -128,7 +132,8 @@ export function createCamp({ name, year = new Date().getFullYear(), weekCount = 
       label: String(site.label),
       permanentNote: site.permanentNote || '',
       floorboardsPresent: Number(site.floorboardsPresent) || 0,
-      picnicTables: Number(site.picnicTables) || 0
+      picnicTables: Number(site.picnicTables) || 0,
+      maximumOccupancy: Number(site.maximumOccupancy) || 0
     })),
     distances: { ...(hill.distances || {}) }
   }));
@@ -230,7 +235,9 @@ export function createDefaultData() {
     theme: 'system',
     contrast: 'standard',
     zoomPercent: 100,
-    columns: structuredClone(DEFAULT_COLUMNS),
+    columns: structuredClone([...DEFAULT_COLUMNS, ...OPTIONAL_PRINT_COLUMNS]),
+    weeklyFields: Object.fromEntries(WEEKLY_FIELDS.map(([id, , visible]) => [id, visible])),
+    weeklyFieldLabels: Object.fromEntries(WEEKLY_FIELDS.map(([id, label]) => [id, label])),
     printSettings: structuredClone(DEFAULT_PRINT_SETTINGS),
     advanced: structuredClone(DEFAULT_ADVANCED),
     camps: [blackhawk],
@@ -288,5 +295,5 @@ export function syncCampStructure(camp) {
 }
 
 export function restoreColumnDefaults() {
-  return structuredClone(DEFAULT_COLUMNS);
+  return structuredClone([...DEFAULT_COLUMNS, ...OPTIONAL_PRINT_COLUMNS]);
 }

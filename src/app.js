@@ -24,6 +24,10 @@ import {
 } from './core/optimizer.js';
 
 const appElement = document.querySelector('#app');
+import { ATTENDANCE_FIELDS, CONTACT_STATUSES, WEEKLY_FIELDS, OPTIONAL_PRINT_COLUMNS,
+  normalizeAttendance, attendanceEstimate, requestIsBlank, acceptEstimate, syncTroopSummary, syncAttendanceSummary,
+  mixedResponseEstimate, mixedResponseSignature } from './core/attendance.js';
+let gridFieldsTab = 'weekly';
 const toastRegion = document.querySelector('#toast-region');
 const modalRoot = document.querySelector('#modal-root');
 const printRoot = document.querySelector('#print-root');
@@ -40,8 +44,14 @@ let saveStatus = 'saved';
 let calculationStatus = 'up-to-date';
 let calculationTimer = null;
 let guideQuery = '';
+let preservedWeeklyView = null;
+let weeklyInputView = null;
+let undoStack = [];
+let redoStack = [];
+let pendingEditHistory = null;
+const HISTORY_LIMIT = 100;
 
-const APP_VERSION = '0.8.3';
+const APP_VERSION = '0.10.0';
 const icons = {
   overview: '🏠', plan: '📋', counts: '✓', statistics: '📊', print: '🖨', advanced: '⚙', help: '?'
 };
@@ -106,7 +116,11 @@ function allSites(camp = activeCamp()) {
 }
 
 function siteById(siteId, camp = activeCamp()) {
-  return allSites(camp).find((site) => site.id === siteId);
+  for (const hill of camp.hills) {
+    const site = hill.sites.find((entry) => entry.id === siteId);
+    if (site) return site;
+  }
+  return null;
 }
 
 function normalizeLoadedData(loaded) {
@@ -130,6 +144,15 @@ function normalizeLoadedData(loaded) {
     advanced: { ...DEFAULT_ADVANCED, ...(loaded.advanced || {}) }
   };
   merged.version = DATA_VERSION;
+  merged.weeklyFields = { ...defaults.weeklyFields, ...(loaded.weeklyFields || {}) };
+  merged.weeklyFieldLabels = { ...defaults.weeklyFieldLabels, ...(loaded.weeklyFieldLabels || {}) };
+  if (loadedVersion < 10) merged.weeklyFields.troopCount = true;
+  if (!loaded.weeklyFields && loaded.printSettings?.showTroopFields === false) {
+    for (const key of ['troopName', ...ATTENDANCE_FIELDS.map(([id]) => id)]) merged.weeklyFields[key] = false;
+  }
+  for (const column of OPTIONAL_PRINT_COLUMNS) {
+    if (!merged.columns.some((existing) => existing.id === column.id)) merged.columns.push({ ...column });
+  }
   for (const camp of merged.camps) {
     camp.year ??= Number(String(camp.name || '').match(/\b(20\d{2})\b/)?.[1]) || 2026;
     camp.inventory = {
@@ -139,7 +162,10 @@ function normalizeLoadedData(loaded) {
       ...(camp.inventory || {})
     };
     syncCampStructure(camp);
-    for (const hill of camp.hills) for (const site of hill.sites) site.picnicTables ??= 0;
+    for (const hill of camp.hills) for (const site of hill.sites) {
+      site.picnicTables ??= 0;
+      site.maximumOccupancy ??= 0;
+    }
     for (const week of camp.weeks) {
       week.moneyRoll ??= false;
       week.returnExtras ??= false;
@@ -154,6 +180,7 @@ function normalizeLoadedData(loaded) {
         week.planStatus = 'draft';
       }
       for (const record of Object.values(week.sites)) {
+        normalizeAttendance(record);
         record.occupancy ??= 'troop';
         record.arrival ??= 'normal';
         record.troopName ??= '';
@@ -283,11 +310,59 @@ function showToast(message, error = false) {
   setTimeout(() => toast.remove(), 4000);
 }
 
-function showModal({ title, body, actions = [] }) {
+function pushHistory(label) {
+  undoStack.push({ label, state: structuredClone(state) });
+  if (undoStack.length > HISTORY_LIMIT) undoStack.shift();
+  redoStack = [];
+  updateHistoryControls();
+}
+
+function updateHistoryControls() {
+  const undoButton = document.querySelector('[data-action="undo"]');
+  const redoButton = document.querySelector('[data-action="redo"]');
+  if (undoButton) {
+    undoButton.disabled = !undoStack.length;
+    undoButton.title = undoStack.length ? `Undo: ${undoStack.at(-1).label}` : 'Nothing to undo';
+  }
+  if (redoButton) {
+    redoButton.disabled = !redoStack.length;
+    redoButton.title = redoStack.length ? `Redo: ${redoStack.at(-1).label}` : 'Nothing to redo';
+  }
+}
+
+function captureEditHistory(target) {
+  if (!target?.matches?.('input, textarea, select')) return;
+  pendingEditHistory = { label: target.getAttribute('aria-label') || target.closest('label')?.innerText?.trim().split('\n')[0] || 'Edit field', state: structuredClone(state) };
+}
+
+function commitEditHistory() {
+  if (!pendingEditHistory) return;
+  undoStack.push(pendingEditHistory);
+  if (undoStack.length > HISTORY_LIMIT) undoStack.shift();
+  redoStack = [];
+  pendingEditHistory = null;
+  updateHistoryControls();
+}
+
+function restoreHistory(source, destination, prefix) {
+  const entry = source.pop();
+  if (!entry) return;
+  destination.push({ label: entry.label, state: structuredClone(state) });
+  state = normalizeLoadedData(entry.state);
+  pendingEditHistory = null;
+  pendingAttendanceReview = null;
+  closeModal();
+  queueSave(0); render(); showToast(`${prefix} “${entry.label}”.`);
+}
+
+function undo() { restoreHistory(undoStack, redoStack, 'Undid'); }
+function redo() { restoreHistory(redoStack, undoStack, 'Redid'); }
+
+function showModal({ title, body, actions = [], topCloseAction = '' }) {
   modalRoot.innerHTML = `
     <div class="modal-backdrop" data-action="close-modal">
       <div class="modal" role="dialog" aria-modal="true" aria-label="${escapeHtml(title)}" data-modal-panel>
-        <div class="modal-head"><h2>${escapeHtml(title)}</h2></div>
+        <div class="modal-head"><h2>${escapeHtml(title)}</h2>${topCloseAction ? `<button class="btn modal-top-close" data-action="${escapeHtml(topCloseAction)}">Close</button>` : ''}</div>
         <div class="modal-body">${body}</div>
         <div class="modal-actions">
           ${actions.map((action) => `<button class="btn ${action.className || ''}" data-action="${escapeHtml(action.action)}" ${action.data || ''}>${escapeHtml(action.label)}</button>`).join('')}
@@ -317,7 +392,7 @@ function headerHtml(camp, week) {
       </div>
       <div class="top-actions">
         <div class="zoom-controls" aria-label="App zoom"><button data-action="zoom-out" title="Make text smaller">A−</button><span>${state.zoomPercent}%</span><button data-action="zoom-in" title="Make text larger">A+</button></div>
-        <div class="top-status-cluster"><span class="calculation-status" data-calculation-status>${calculationStatus === 'updating' ? 'Updating plan…' : calculationStatus === 'blocked' ? 'Plan needs counts or distances' : 'Plan up to date'}</span><button class="btn small save-now" data-action="save-now" title="Save all current information now">Save</button><div class="save-status ${saveStatus === 'saving' ? 'saving' : ''}" data-save-status><span class="save-dot"></span><span>${saveStatus === 'saving' ? 'Saving…' : 'Saved locally'}</span></div>
+        <div class="top-status-cluster"><span class="calculation-status" data-calculation-status>${calculationStatus === 'updating' ? 'Updating plan…' : calculationStatus === 'blocked' ? 'Plan needs counts or distances' : 'Plan up to date'}</span><button class="btn small" data-action="undo" title="${undoStack.length ? `Undo: ${escapeHtml(undoStack.at(-1).label)}` : 'Nothing to undo'}" ${undoStack.length ? '' : 'disabled'}>Undo</button><button class="btn small" data-action="redo" title="${redoStack.length ? `Redo: ${escapeHtml(redoStack.at(-1).label)}` : 'Nothing to redo'}" ${redoStack.length ? '' : 'disabled'}>Redo</button><button class="btn small save-now" data-action="save-now" title="Save all current information now">Save</button><div class="save-status ${saveStatus === 'saving' ? 'saving' : ''}" data-save-status><span class="save-dot"></span><span>${saveStatus === 'saving' ? 'Saving…' : 'Saved locally'}</span></div>
         <button class="icon-button" data-action="toggle-theme" title="Switch to ${nextTheme} mode">${resolvedTheme === 'dark' ? '☀' : '☾'}</button></div>
       </div>
     </header>`;
@@ -352,6 +427,19 @@ function sidebarHtml() {
 }
 
 function render() {
+  const oldScroll = document.querySelector('.weekly-scroll');
+  const weeklyView = preservedWeeklyView || (oldScroll ? { left: oldScroll.scrollLeft, top: oldScroll.scrollTop } : null);
+  preservedWeeklyView = null;
+  const focused = oldScroll?.contains(document.activeElement) ? {
+    siteId: document.activeElement.dataset.siteId,
+    recordField: document.activeElement.dataset.recordField,
+    troopField: document.activeElement.dataset.troopField,
+    attendanceField: document.activeElement.dataset.attendanceField,
+    troopIndex: document.activeElement.dataset.troopIndex,
+    troopCount: document.activeElement.dataset.troopCount,
+    selectionStart: typeof document.activeElement.selectionStart === 'number' ? document.activeElement.selectionStart : null,
+    selectionEnd: typeof document.activeElement.selectionEnd === 'number' ? document.activeElement.selectionEnd : null
+  } : null;
   const camp = activeCamp();
   const week = activeWeek();
   if (!camp || !week) return;
@@ -367,6 +455,23 @@ function render() {
   };
   appElement.innerHTML = `${sidebarHtml()}<main class="main">${headerHtml(camp, week)}<div class="content">${(pages[route] || renderOverview)(camp, week)}</div></main>`;
   hydrateCommandLayoutEditor();
+  const newScroll = document.querySelector('.weekly-scroll');
+  if (weeklyView && newScroll) {
+    const restoreWeeklyScroll = () => {
+      const current = document.querySelector('.weekly-scroll');
+      if (current) { current.scrollLeft = weeklyView.left; current.scrollTop = weeklyView.top; }
+    };
+    restoreWeeklyScroll();
+    if (focused) {
+      const candidates = [...newScroll.querySelectorAll('input,select,textarea')];
+      const match = candidates.find((element) => ['siteId','recordField','troopField','attendanceField','troopIndex','troopCount'].every((key) => (element.dataset[key] || undefined) === (focused[key] || undefined)));
+      match?.focus({ preventScroll: true });
+      if (match && focused.selectionStart !== null && typeof match.setSelectionRange === 'function') {
+        const length = String(match.value ?? '').length;
+        match.setSelectionRange(Math.min(focused.selectionStart, length), Math.min(focused.selectionEnd ?? focused.selectionStart, length));
+      }
+    }
+  }
 }
 
 function missingDistanceCount(camp) {
@@ -430,13 +535,14 @@ function renderOverview(camp, week) {
   const redTagTotal = redTags.reduce((sum, item) => sum + item.quantity, 0);
   const extras = extraEquipment(camp, week);
   const extraTotal = extras.reduce((sum, item) => sum + item.quantity, 0);
+  const overCapacity = allSites(camp).map((site) => ({ site, warning: occupancyWarning(site, week.sites[site.id]) })).filter((item) => item.warning);
   const storage = escapeHtml(camp.inventory.storageLocation || 'Basement');
   return `
     <div class="page-head">
       <div><div class="eyebrow">${escapeHtml(campDisplayName(camp))} · ${escapeHtml(week.name)}</div><h1>Changeover at a glance</h1><p class="subtitle">Enter troop requests, calculate the shortest same-hill moves, then print clean directions for each hill.</p></div>
       <div class="button-row"><button class="btn primary" data-route="plan">Open weekly plan →</button></div>
     </div>
-    <div class="overview-alerts section"><button class="card overview-link" data-action="show-red-tags"><span><strong>${redTagTotal} Red Tag item${redTagTotal === 1 ? '' : 's'}</strong><small>${redTagTotal ? 'See the recorded sites and equipment.' : 'No Red Tag items recorded this week.'}</small></span><b>View →</b></button><button class="card overview-link" data-action="show-extras"><span><strong>${extraTotal} extra item${extraTotal === 1 ? '' : 's'} available</strong><small>${week.plan ? 'Find emergency equipment by hill and site.' : 'Calculate the week to locate available extras.'}</small></span><b>View →</b></button></div>
+    <div class="overview-alerts section"><button class="card overview-link" data-action="show-red-tags"><span><strong>${redTagTotal} Red Tag item${redTagTotal === 1 ? '' : 's'}</strong><small>${redTagTotal ? 'See the recorded sites and equipment.' : 'No Red Tag items recorded this week.'}</small></span><b>View →</b></button><button class="card overview-link" data-action="show-extras"><span><strong>${extraTotal} extra item${extraTotal === 1 ? '' : 's'} available</strong><small>${week.plan ? 'Find emergency equipment by hill and site.' : 'Calculate the week to locate available extras.'}</small></span><b>View →</b></button>${overCapacity.length ? `<button class="card overview-link warning-link" data-action="show-occupancy-warnings"><span><strong>${overCapacity.length} site${overCapacity.length === 1 ? '' : 's'} over configured occupancy</strong><small>Advisory only; planning is never blocked.</small></span><b>View →</b></button>` : ''}</div>
     <div class="grid four">
       <div class="card stat"><div class="stat-label">Requested equipment</div><div class="stat-pair"><strong>${totals.requestedTents}<small>tents</small></strong><strong>${totals.requestedCots}<small>cots</small></strong></div></div>
       <div class="card stat"><div class="stat-label">Currently at sites</div><div class="stat-pair"><strong>${totals.currentTents}<small>tents</small></strong><strong>${totals.currentCots}<small>cots</small></strong></div></div>
@@ -487,54 +593,236 @@ function siteCotDelta(record) {
   return n(target) - n(record.currentCots);
 }
 
+
+let pendingTroopReduction = null;
+let pendingAttendanceReview = null;
+
+function requestBlank(record, field) {
+  return !record[`${field}Overridden`] && (record[field] === null || record[field] === '' || n(record[field]) === 0);
+}
+
+function attendanceReviewSites() {
+  return allSites().filter((site) => {
+    const record = normalizeAttendance(activeWeek().sites[site.id]);
+    const hasWaiting = record.troops.some((troop) => troop.contact === 'waiting');
+    const hasNotContacted = record.troops.some((troop) => troop.contact === 'not-contacted');
+    return record.occupancy === 'troop' && !record.closeForSeason
+      && (hasWaiting || hasNotContacted || requestBlank(record, 'requestedTents') || requestBlank(record, 'requestedCots') || occupancyWarning(site, record));
+  });
+}
+
+function occupancyWarning(site, record) {
+  const people = attendanceEstimate(record).cots;
+  const maximum = n(site.maximumOccupancy);
+  return maximum > 0 && people > maximum ? { people, maximum, over: people - maximum } : null;
+}
+
+function reviewSummary() {
+  const sites = attendanceReviewSites();
+  const waiting = sites.filter((site) => activeWeek().sites[site.id].troops.some((troop) => troop.contact === 'waiting')).length;
+  const notContacted = sites.filter((site) => activeWeek().sites[site.id].troops.some((troop) => troop.contact === 'not-contacted')).length;
+  const blank = sites.filter((site) => requestBlank(activeWeek().sites[site.id], 'requestedTents') || requestBlank(activeWeek().sites[site.id], 'requestedCots')).length;
+  const over = allSites().filter((site) => {
+    const record = activeWeek().sites[site.id];
+    return record?.occupancy === 'troop' && !record.closeForSeason && occupancyWarning(site, record);
+  }).length;
+  return { sites: sites.length, waiting, notContacted, blank, over };
+}
+
+function reviewValue(record, field, unit) {
+  return requestBlank(record, field) ? `<strong class="blank-value">Blank</strong> <small>No ${unit} request has been entered.</small>`
+    : `<strong>${n(record[field])} ${unit}</strong>${n(record[field]) === 0 ? ' <small>Manually entered zero</small>' : ''}`;
+}
+
+function attendanceReviewCard(site, record) {
+  const full = attendanceEstimate(record); const partial = mixedResponseEstimate(record);
+  const tentsBlank = requestBlank(record, 'requestedTents');
+  const cotsBlank = requestBlank(record, 'requestedCots');
+  const bothEntered = !tentsBlank && !cotsBlank;
+  const waiting = record.troops.filter((troop) => troop.contact === 'waiting');
+  const notContacted = record.troops.filter((troop) => troop.contact === 'not-contacted');
+  const defaultChoice = bothEntered ? 'entered' : full.cots ? 'full' : 'zero';
+  pendingAttendanceReview.choices[site.id] ||= { ...(activeWeek().attendanceReviewChoices?.[site.id] || {}), type: activeWeek().attendanceReviewChoices?.[site.id]?.type || defaultChoice, tents: n(record.requestedTents), cots: n(record.requestedCots) };
+  const choice = pendingAttendanceReview.choices[site.id];
+  if (choice.type === 'entered' && !bothEntered) choice.type = full.cots ? 'full' : 'zero';
+  if (choice.type === 'zero' && bothEntered) choice.type = 'entered';
+  const warning = occupancyWarning(site, record);
+  const reasons = [waiting.length ? 'WAITING FOR NUMBERS' : '', notContacted.length ? 'NOT CONTACTED' : '', requestBlank(record,'requestedTents') || requestBlank(record,'requestedCots') ? 'MISSING REQUEST' : '', partial ? 'MIXED RESPONSES' : '', warning ? 'OVER OCCUPANCY' : ''].filter(Boolean);
+  const troopContactText = record.troops.map((troop,index) => troop.name ? `Troop ${troop.name}: ${CONTACT_STATUSES.find(([id]) => id === troop.contact)?.[1]}` : `${record.troops.length > 1 ? `Troop ${index + 1}` : `The troop at Site ${site.label}`}: ${CONTACT_STATUSES.find(([id]) => id === troop.contact)?.[1]}`).join(' · ');
+  return `<section class="attendance-review-card" data-review-site="${site.id}">
+    <div class="attendance-review-head"><div><h3>Site ${escapeHtml(site.label)} — ${escapeHtml(site.hillName)}</h3><p>${escapeHtml(troopContactText)}</p><div class="review-reasons">${reasons.map((reason) => `<span class="tag amber">${reason}</span>`).join('')}</div></div></div>
+    ${warning ? `<div class="notice warn compact"><span class="notice-icon">!</span><div><strong>${warning.over} ${warning.over === 1 ? 'person' : 'people'} over configured occupancy</strong><p>${warning.people} recorded · Maximum ${warning.maximum}. This warning never blocks planning.</p></div></div>` : ''}
+    <div class="review-current"><div><span>Needed tents</span>${reviewValue(record, 'requestedTents', 'tents')}</div><div><span>Needed cots</span>${reviewValue(record, 'requestedCots', 'cots')}</div></div>
+    <div class="review-troops"><div class="review-troop-head"><span>Troop and response</span>${ATTENDANCE_FIELDS.map(([,label]) => `<span>${escapeHtml(label)}</span>`).join('')}</div>${record.troops.map((troop,index) => `<div class="review-troop-row"><div><strong>${escapeHtml(troop.name || `Troop ${index + 1}`)}</strong><small>${escapeHtml(CONTACT_STATUSES.find(([id]) => id === troop.contact)?.[1] || troop.contact)}</small></div>${ATTENDANCE_FIELDS.map(([field,label]) => `<label><span>${escapeHtml(label)}</span><input type="text" inputmode="numeric" pattern="[0-9]*" data-review-attendance="${field}" data-site-id="${site.id}" data-troop-index="${index}" value="${n(troop.attendance[field])}"></label>`).join('')}</div>`).join('')}</div>
+    <div class="review-minimums"><div><span>Minimum for everyone recorded at this site</span><strong data-review-full="${site.id}">${full.tents} tents · ${full.cots} cots</strong><small>Calculated from every troop and sleeping group entered above.</small></div><div class="${partial ? '' : 'hidden'}"><span>Minimum for waiting troops only</span><strong data-review-partial="${site.id}">${partial ? `${partial.tents} tents · ${partial.cots} cots` : ''}</strong><small>Adds only attendance from troops still waiting for numbers.</small></div></div>
+    <fieldset class="review-choices"><legend>Choose what to use for Site ${escapeHtml(site.label)}</legend>
+      ${bothEntered ? `<label><input type="radio" name="review-${site.id}" data-review-choice="entered" data-site-id="${site.id}" ${choice.type === 'entered' ? 'checked' : ''}> <span><strong>Use the currently entered request — ${n(record.requestedTents)} tents and ${n(record.requestedCots)} cots</strong><small>Keep the Weekly Plan numbers. Contact statuses stay unchanged unless selected below.</small></span></label>` : ''}
+      <label class="${full.cots ? '' : 'disabled-choice'}"><input type="radio" name="review-${site.id}" data-review-choice="full" data-site-id="${site.id}" ${choice.type === 'full' ? 'checked' : ''} ${full.cots ? '' : 'disabled'}> <span><strong>Use the minimum for everyone recorded at this site</strong><small data-review-full-choice="${site.id}">${full.cots ? `${full.tents} tents and ${full.cots} cots, calculated from all troop attendance above.` : 'Unavailable: enter attendance above to calculate a minimum.'}</small></span></label>
+      ${partial ? `<label class="${bothEntered && partial.cots ? '' : 'disabled-choice'}"><input type="radio" name="review-${site.id}" data-review-choice="add" data-site-id="${site.id}" ${choice.type === 'add' ? 'checked' : ''} ${bothEntered && partial.cots ? '' : 'disabled'}> <span><strong>Add the waiting troops’ attendance estimate</strong><small data-review-add-choice="${site.id}">${bothEntered ? `Keep ${n(record.requestedTents)} tents and ${n(record.requestedCots)} cots, add ${partial.tents} tents and ${partial.cots} cots, for ${n(record.requestedTents) + partial.tents} tents and ${n(record.requestedCots) + partial.cots} cots total.` : 'Unavailable: enter the responding troops’ request first, or use the minimum for everyone.'}</small></span></label>` : ''}
+      <label><input type="radio" name="review-${site.id}" data-review-choice="custom" data-site-id="${site.id}" ${choice.type === 'custom' ? 'checked' : ''}> <span><strong>Enter a different site request</strong><span class="review-custom"><input type="text" inputmode="numeric" data-review-custom="tents" data-site-id="${site.id}" value="${choice.tents}"> tents <input type="text" inputmode="numeric" data-review-custom="cots" data-site-id="${site.id}" value="${choice.cots}"> cots</span></span></label>
+      ${!bothEntered ? `<label><input type="radio" name="review-${site.id}" data-review-choice="zero" data-site-id="${site.id}" ${choice.type === 'zero' ? 'checked' : ''}> <span><strong>${tentsBlank && cotsBlank ? 'Intentionally use zero for both blank requests' : tentsBlank ? 'Intentionally use zero tents' : 'Intentionally use zero cots'}</strong><small>${tentsBlank && cotsBlank ? 'Records both blank requests as intentional zeros.' : `Records the blank ${tentsBlank ? 'tent' : 'cot'} request as zero and preserves the entered ${tentsBlank ? 'cot' : 'tent'} request.`}</small></span></label>` : ''}
+      ${waiting.length ? `<label class="review-secondary"><input type="checkbox" data-review-mark-responded="${site.id}" ${choice.markResponded ? 'checked' : ''}> <span><strong>Also mark waiting troop${waiting.length === 1 ? '' : 's'} as Responded With Numbers</strong><small>Off by default. Only waiting troop records at this site will change.</small></span></label>` : ''}
+      ${notContacted.length ? `<label class="review-secondary"><input type="checkbox" data-review-mark-open="${site.id}" ${choice.markOpen ? 'checked' : ''}> <span><strong>No troop is staying here — mark Site ${escapeHtml(site.label)} Open</strong><small>Off by default. Troop details remain saved but are excluded from this week’s plan.</small></span></label>` : ''}
+    </fieldset>
+  </section>`;
+}
+
+function openAttendanceReview(resume = { type: 'review' }) {
+  const sites = attendanceReviewSites();
+  pendingAttendanceReview = { resume, records: {}, choices: {} };
+  for (const site of sites) pendingAttendanceReview.records[site.id] = structuredClone(normalizeAttendance(activeWeek().sites[site.id]));
+  const summary = reviewSummary();
+  showModal({ title: 'Attendance Request Review', topCloseAction: 'close-attendance-review', body: sites.length ? `<p>Review every site below. <strong>Blank</strong> means no request was entered; it is different from a commissioner deliberately choosing zero.</p><p class="review-summary"><strong>${summary.sites} sites need review</strong> · ${summary.waiting} waiting · ${summary.notContacted} not contacted · ${summary.blank} with blank requests${summary.over ? ` · ${summary.over} over occupancy` : ''}</p><div class="notice warn review-proceed"><span class="notice-icon">!</span><div><strong>Need to calculate or preview incomplete test numbers?</strong><p>Blank requests will be treated as zero for this calculation only. The Weekly Plan will not change, and these sites will appear again next time.</p><button class="btn" data-action="proceed-current-review">Proceed Anyway with Current Numbers</button> <button class="btn danger" data-action="permanent-zero-review">Set Remaining Blanks to Zero…</button></div></div><div class="attendance-review-list">${sites.map((site) => attendanceReviewCard(site, pendingAttendanceReview.records[site.id])).join('')}</div>` : '<p>No unresolved attendance, contact, or request issues. There is nothing requiring a decision right now.</p>', actions: [{ label: 'Cancel', action: 'close-attendance-review' }, ...(sites.length ? [{ label: 'Apply site decisions', action: 'apply-attendance-review', className: 'primary' }] : [])] });
+  modalRoot.querySelector('.modal')?.classList.add('attendance-review-modal');
+}
+
+function reviewEstimates() { openAttendanceReview({ type: 'review' }); }
+
+function updateAttendanceReviewSummary(siteId) {
+  const record = pendingAttendanceReview?.records[siteId];
+  if (!record) return;
+  syncAttendanceSummary(record);
+  const full = attendanceEstimate(record); const partial = mixedResponseEstimate(record);
+  const fullSummary = modalRoot.querySelector(`[data-review-full="${siteId}"]`);
+  const fullChoice = modalRoot.querySelector(`[data-review-full-choice="${siteId}"]`);
+  const fullRadio = modalRoot.querySelector(`[data-review-choice="full"][data-site-id="${siteId}"]`);
+  if (fullSummary) fullSummary.textContent = `${full.tents} tents · ${full.cots} cots`;
+  if (fullChoice) fullChoice.textContent = full.cots ? `${full.tents} tents and ${full.cots} cots` : 'Enter attendance above to enable this option.';
+  if (fullRadio) fullRadio.disabled = !full.cots;
+  if (partial) {
+    const partialSummary = modalRoot.querySelector(`[data-review-partial="${siteId}"]`);
+    const addChoice = modalRoot.querySelector(`[data-review-add-choice="${siteId}"]`);
+    const addRadio = modalRoot.querySelector(`[data-review-choice="add"][data-site-id="${siteId}"]`);
+    const bothEntered = !requestBlank(record, 'requestedTents') && !requestBlank(record, 'requestedCots');
+    if (partialSummary) partialSummary.textContent = `${partial.tents} tents · ${partial.cots} cots`;
+    if (addChoice) addChoice.textContent = bothEntered ? `Result: ${n(record.requestedTents) + partial.tents} tents and ${n(record.requestedCots) + partial.cots} cots` : 'Enter the responding troops’ site request first, or use the full attendance minimum.';
+    if (addRadio) addRadio.disabled = !bothEntered || !partial.cots;
+  }
+}
+
+function finishAttendanceReview(proceedCurrent = false) {
+  if (!pendingAttendanceReview) return;
+  const pending = pendingAttendanceReview;
+  if (proceedCurrent) {
+    pendingAttendanceReview = null; closeModal();
+    if (pending.resume.type === 'calculate') resumeAfterAttendanceReview(pending, true);
+    else showToast('Continued temporarily. Blank requests remain blank and will be reviewed again.');
+    return;
+  }
+  pushHistory('Apply attendance review');
+  activeWeek().attendanceReviewChoices ||= {};
+  for (const [siteId, working] of Object.entries(pending.records)) {
+    const record = activeWeek().sites[siteId]; const choice = pending.choices[siteId] || { type: 'zero' };
+    for (let index = 0; index < working.troops.length; index++) record.troops[index].attendance = { ...working.troops[index].attendance };
+    syncTroopSummary(record);
+    const full = attendanceEstimate(record); const partial = mixedResponseEstimate(record);
+    const type = choice.type;
+    record.requestSources ||= {};
+    if (type === 'full') {
+      record.requestedTents = full.tents; record.requestedCots = full.cots;
+      record.requestedTentsOverridden = true; record.requestedCotsOverridden = true;
+      record.requestSources.requestedTents = { type: 'attendance', attendance: { ...record.attendance }, acceptedAt: new Date().toISOString() };
+      record.requestSources.requestedCots = { type: 'attendance', attendance: { ...record.attendance }, acceptedAt: new Date().toISOString() };
+      if (!record.floorboardsOverridden) record.requestedFloorboards = full.tents;
+    } else if (type === 'add' && partial) {
+      record.requestedTents = n(record.requestedTents) + partial.tents; record.requestedCots = n(record.requestedCots) + partial.cots;
+      record.requestedTentsOverridden = true; record.requestedCotsOverridden = true;
+      record.requestSources.requestedTents = { type: 'partial-attendance', acceptedAt: new Date().toISOString() };
+      record.requestSources.requestedCots = { type: 'partial-attendance', acceptedAt: new Date().toISOString() };
+      if (!record.floorboardsOverridden) record.requestedFloorboards = record.requestedTents;
+    } else if (type === 'custom') {
+      record.requestedTents = n(choice.tents); record.requestedCots = n(choice.cots);
+      record.requestedTentsOverridden = true; record.requestedCotsOverridden = true;
+      delete record.requestSources.requestedTents; delete record.requestSources.requestedCots;
+      if (!record.floorboardsOverridden) record.requestedFloorboards = record.requestedTents;
+    } else if (type === 'zero') {
+      if (requestBlank(record, 'requestedTents')) record.requestedTents = 0;
+      if (requestBlank(record, 'requestedCots')) record.requestedCots = 0;
+      record.requestedTentsOverridden = true; record.requestedCotsOverridden = true;
+    }
+    if (choice.markResponded) for (const troop of record.troops) if (troop.contact === 'waiting') troop.contact = 'responded';
+    if (choice.markOpen) record.occupancy = 'open';
+    activeWeek().attendanceReviewChoices[siteId] = { ...choice };
+    if (mixedResponseEstimate(record)) record.mixedResponseAcknowledged = mixedResponseSignature(record);
+  }
+  pendingAttendanceReview = null; closeModal(); activeWeek().plan = null; activeWeek().planStatus = 'draft'; queueSave(); render();
+  if (pending.resume.type === 'calculate') resumeAfterAttendanceReview(pending, true);
+  else showToast('Attendance review decisions applied.');
+}
+
+function resumeAfterAttendanceReview(pending, skipAttendanceReview) {
+  const options = { ...(pending.resume.options || {}), skipAttendanceReview };
+  if (!calculatePlan(pending.resume.force, options)) return;
+  if (options.afterReview === 'preview') saveNow().then(() => printPacket());
+  if (options.afterReview === 'export') saveNow().then(async () => { printPacket(); await exportCurrentPacket('mixed'); });
+}
+
+function finishWeeklyEdit(deferRender = false) {
+  activeWeek().plan = null; activeWeek().planStatus = 'draft'; queueSave(); scheduleCalculation();
+  if (deferRender) {
+    const scroll = document.querySelector('.weekly-scroll');
+    preservedWeeklyView = weeklyInputView || (scroll ? { left: scroll.scrollLeft, top: scroll.scrollTop } : null);
+    weeklyInputView = null;
+    setTimeout(() => { if (route === 'plan') render(); }, 0);
+  }
+  else render();
+}
+
 function renderPlan(camp, week) {
-  const previous = previousWeekStatus(camp, week);
   const canClose = week.number >= Math.max(1, camp.weeks.length - 1);
-  const showPeople = state.printSettings.showTroopFields !== false;
-  const columnCount = (canClose ? 15 : 14) - (showPeople ? 0 : 2);
+  const fields = WEEKLY_FIELDS.filter(([id]) => (id === 'site' || state.weeklyFields[id] !== false) && (id !== 'season' || canClose));
+  const input = (site, record, field, extra = '') => `<input class="cell-input" type="text" inputmode="numeric" pattern="[0-9]*" data-record-field="${field}" data-site-id="${site.id}" value="${n(record[field])}" ${extra}>`;
+  const troopControls = (site, record, field) => record.troops.map((troop, index) => {
+    const label = troop.name || `Troop ${index + 1}`;
+    const attrs = `data-troop-field="${field}" data-troop-index="${index}" data-site-id="${site.id}" aria-label="Site ${escapeHtml(site.label)}, ${escapeHtml(label)}, ${field}"`;
+    const control = field === 'name' ? `<input class="cell-input troop-field" ${attrs} value="${escapeHtml(troop.name)}" placeholder="Troop ${index + 1}">`
+      : `<select class="cell-select" ${attrs}>${field === 'arrival' ? arrivalOptions(troop.arrival) : CONTACT_STATUSES.map(([value, text]) => `<option value="${value}" ${troop.contact === value ? 'selected' : ''}>${text}</option>`).join('')}</select>`;
+    return `<div class="troop-control">${record.troops.length > 1 ? `<small>${escapeHtml(label)}</small>` : ''}${control}</div>`;
+  }).join('');
+  const request = (site, record, field) => {
+    const estimate = attendanceEstimate(record);
+    const blank = requestIsBlank(record, field);
+    const value = field === 'requestedTents' ? estimate.tents : estimate.cots;
+    const item = field === 'requestedTents' ? 'tents' : 'cots';
+    return `<input class="cell-input recommendation-input" type="text" inputmode="numeric" pattern="[0-9]*" data-record-field="${field}" data-site-id="${site.id}" value="${blank ? '' : n(record[field])}" placeholder="${estimate.cots ? value : '0'}" aria-label="Site ${escapeHtml(site.label)} ${field === 'requestedTents' ? 'Needed Tents' : 'Needed Cots'}">${blank && estimate.cots ? `<div class="estimate-label">Suggested: ${value} ${inlineHelp('Minimum suggested supplies',`This is the minimum number of ${item} needed while following Scouting America's Youth Protection and tenting guidelines, based on the attendance entered for each troop and sleeping group. It remains a suggestion until the commissioner accepts it.`) }<br>Minimum from attendance</div><button class="text-action" data-action="accept-estimate" data-site-id="${site.id}" data-estimate-field="${field}">Use suggestion</button>` : record.requestSources[field]?.type === 'attendance' || record.requestSources[field]?.type === 'partial-attendance' ? `<div class="estimate-label">Attendance estimate ${inlineHelp('Attendance estimate',`This value was explicitly accepted as the minimum number of ${item} needed while following Scouting America's Youth Protection and tenting guidelines. Later attendance edits do not silently replace it; type a different value to override it.`)}</div>` : ''}`;
+  };
   let rows = '';
   for (const hill of camp.hills) {
-    rows += `<tr class="hill-row"><td colspan="${columnCount}">${escapeHtml(hill.name)}</td></tr>`;
-    for (const site of [...hill.sites].sort((a,b) => String(a.label).localeCompare(String(b.label), undefined, { numeric: true }))) {
-      const record = week.sites[site.id];
-      const supply = record.plannedSupplyTentsUp ?? record.currentSupplyTentsUp;
-      rows += `
-        <tr data-site-row="${site.id}">
-          <td class="site-cell">Site ${escapeHtml(site.label)}${site.permanentNote ? `<div class="site-note">${escapeHtml(site.permanentNote)}</div>` : ''}</td>
-          <td><select class="cell-select" data-record-field="occupancy" data-site-id="${site.id}">${occupancyOptions(record.occupancy)}</select></td>
-          <td><select class="cell-select" data-record-field="arrival" data-site-id="${site.id}" ${record.occupancy !== 'troop' ? 'disabled' : ''}>${arrivalOptions(record.arrival)}</select>${record.arrival === 'early' ? '<div class="early">EARLY</div>' : ''}</td>
-          ${showPeople ? `<td><input class="cell-input troop-field" data-record-field="troopName" data-site-id="${site.id}" value="${escapeHtml(record.troopName || '')}" placeholder="Optional" ${record.occupancy !== 'troop' ? 'disabled' : ''}></td><td><input class="cell-input people-field" type="number" min="0" data-record-field="headcount" data-site-id="${site.id}" value="${n(record.headcount)}" ${record.occupancy !== 'troop' ? 'disabled' : ''}></td>` : ''}
-          <td class="number-cell"><input class="cell-input" type="number" min="0" data-record-field="currentTotalTents" data-site-id="${site.id}" value="${n(record.currentTotalTents)}"><label class="lock-wrap"><input type="checkbox" data-record-field="lockTents" data-site-id="${site.id}" ${record.lockTents ? 'checked' : ''}> Lock</label></td>
-          <td class="number-cell"><input class="cell-input" type="number" min="0" data-record-field="currentCots" data-site-id="${site.id}" value="${n(record.currentCots)}"><label class="lock-wrap"><input type="checkbox" data-record-field="lockCots" data-site-id="${site.id}" ${record.lockCots ? 'checked' : ''}> Lock</label></td>
-          <td><input class="cell-input recommendation-input" type="number" min="0" data-record-field="requestedTents" data-site-id="${site.id}" value="${record.requestedTentsOverridden ? n(record.requestedTents) : ''}" placeholder="${n(record.headcount) > 0 ? `Suggested: ${Math.ceil(n(record.headcount) / 2)}` : '0'}" ${record.occupancy !== 'troop' ? 'disabled' : ''}></td>
-          <td><input class="cell-input recommendation-input" type="number" min="0" data-record-field="requestedCots" data-site-id="${site.id}" value="${record.requestedCotsOverridden ? n(record.requestedCots) : ''}" placeholder="${n(record.headcount) > 0 ? `Suggested: ${n(record.headcount)}` : '0'}" ${record.occupancy !== 'troop' ? 'disabled' : ''}></td>
-          <td>${deltaHtml(siteTentDelta(record))}</td>
-          <td>${deltaHtml(siteCotDelta(record))}</td>
-          <td><input class="cell-input" type="number" min="0" data-record-field="requestedFloorboards" data-site-id="${site.id}" value="${n(record.requestedFloorboards)}" ${record.occupancy !== 'troop' ? 'disabled' : ''}><div class="site-note">${record.floorboardsOverridden ? 'Override' : 'Follows Tents'}</div></td>
-          <td>${supply ? `<span class="tag green">${supply} up</span>` : '<span class="tag">None</span>'}</td>
-          <td><textarea class="cell-input cell-note" data-record-field="specialRequest" data-site-id="${site.id}" placeholder="Special request…">${escapeHtml(record.specialRequest)}</textarea></td>
-          ${canClose ? `<td><label class="lock-wrap"><input type="checkbox" data-record-field="closeForSeason" data-site-id="${site.id}" ${record.closeForSeason ? 'checked' : ''}> Close for Season</label></td>` : ''}
-        </tr>`;
+    rows += `<tr class="hill-row"><td colspan="${fields.length}"><span class="sticky-hill-name">${escapeHtml(hill.name)}</span></td></tr>`;
+    for (const site of hill.sites) {
+      const record = normalizeAttendance(week.sites[site.id]);
+      const cells = {
+        site: `Site ${escapeHtml(site.label)}${site.permanentNote ? `<div class="site-note">${escapeHtml(site.permanentNote)}</div>` : ''}`,
+        troopCount: `<input class="cell-input" type="text" inputmode="numeric" pattern="[0-9]*" data-troop-count="${site.id}" value="${record.troops.length}" aria-label="Site ${escapeHtml(site.label)} number of troops">`,
+        occupancy: `<select class="cell-select" data-record-field="occupancy" data-site-id="${site.id}">${occupancyOptions(record.occupancy)}</select>`,
+        troopName: troopControls(site, record, 'name'), arrival: troopControls(site, record, 'arrival'), contact: troopControls(site, record, 'contact'),
+        currentTotalTents: input(site, record, 'currentTotalTents') + `<label class="lock-wrap"><input type="checkbox" data-record-field="lockTents" data-site-id="${site.id}" ${record.lockTents ? 'checked' : ''}> Lock</label>`,
+        currentCots: input(site, record, 'currentCots') + `<label class="lock-wrap"><input type="checkbox" data-record-field="lockCots" data-site-id="${site.id}" ${record.lockCots ? 'checked' : ''}> Lock</label>`,
+        requestedTents: request(site, record, 'requestedTents'), requestedCots: request(site, record, 'requestedCots'),
+        tentDelta: deltaHtml(siteTentDelta(record)), cotDelta: deltaHtml(siteCotDelta(record)),
+        requestedFloorboards: input(site, record, 'requestedFloorboards') + `<div class="site-note">${record.floorboardsOverridden ? 'Override' : 'Follows Tents'}</div>`,
+        supplyTents: n(record.plannedSupplyTentsUp ?? record.currentSupplyTentsUp),
+        specialRequest: `<textarea class="cell-input cell-note" data-record-field="specialRequest" data-site-id="${site.id}" placeholder="Printed for hill team leaders when Notes is enabled">${escapeHtml(record.specialRequest)}</textarea><small>Printed when Notes is enabled</small>`,
+        commissionerNotes: `<textarea class="cell-input cell-note" data-record-field="commissionerNotes" data-site-id="${site.id}" placeholder="Commissioner notes">${escapeHtml(record.commissionerNotes)}</textarea><small>${state.columns.some((column) => column.id === 'commissionerNotes' && column.visible) ? 'Printing enabled in Grid Fields' : 'Not printed'}</small>`,
+        season: `<label class="lock-wrap"><input type="checkbox" data-record-field="closeForSeason" data-site-id="${site.id}" ${record.closeForSeason ? 'checked' : ''}> Close for Season</label>`
+      };
+      for (const [id, label] of ATTENDANCE_FIELDS) cells[id] = record.troops.map((troop, index) => `<div class="troop-control attendance-control">${record.troops.length > 1 ? `<small>${escapeHtml(troop.name || `Troop ${index + 1}`)}</small>` : ''}<input class="cell-input" type="text" inputmode="numeric" pattern="[0-9]*" data-attendance-field="${id}" data-troop-index="${index}" data-site-id="${site.id}" value="${troop.attendance[id]}" aria-label="Site ${escapeHtml(site.label)}, ${escapeHtml(troop.name || `Troop ${index + 1}`)}, ${label}"></div>`).join('');
+      if (record.occupancy !== 'troop') {
+        for (const id of ['troopCount', 'troopName', 'arrival', 'contact', 'requestedTents', 'requestedCots', 'requestedFloorboards', ...ATTENDANCE_FIELDS.map(([key]) => key)]) {
+          cells[id] = cells[id].replace(/<(input|select|button)\b/g, '<$1 disabled');
+        }
+      }
+      rows += `<tr data-site-row="${site.id}">${fields.map(([id]) => `<td class="weekly-col-${id}">${cells[id]}</td>`).join('')}</tr>`;
     }
   }
-  return `
-    <div class="page-head">
-      <div><div class="eyebrow">Requests and current inventory</div><h1>Weekly plan</h1><p class="subtitle">The familiar master grid stays simple. Supply-tent math and route selection remain behind the scenes.</p></div>
-      <div class="button-row"><button class="btn" data-action="zero-column">Zero a column…</button><button class="btn primary" data-action="calculate-plan">Calculate changeover</button></div>
-    </div>
-    ${week.number > 1 && !previous.ready ? `<div class="notice warn"><span class="notice-icon">!</span><div><strong>Planning is waiting on ${previous.missing.length} final count${previous.missing.length === 1 ? '' : 's'}</strong><p>You can keep entering requests or print a requirements-only grid. Override only when the missing counts cannot be recovered; the plan will use the best available information.</p><div class="button-row" style="margin-top:10px"><button class="btn small" data-route="counts">Enter counts</button><button class="btn small danger" data-action="override-missing-counts">Override</button></div></div></div>` : ''}
-    <div class="table-shell section">
-      <table>
-        <thead><tr>
-          <th>Site ${fieldHelp('site')}</th><th>Status</th><th>Arrival</th>${showPeople ? `<th>Troop ${inlineHelp('Troop','Optional troop name or number. Used for summer statistics and does not print on the master grid.')}</th><th>Total People at Site ${inlineHelp('Total People at Site','Optional total of scouts and leaders. Statistics only use entered totals; cot requests are never treated as attendance.')}</th>` : ''}
-          <th>Current tents ${fieldHelp('currentTents')}</th><th>Current cots ${fieldHelp('currentCots')}</th>
-          <th>Needed tents ${fieldHelp('neededTents')}</th><th>Needed cots ${fieldHelp('neededCots')}</th>
-          <th>Tent change ${fieldHelp('tentDelta')}</th><th>Cot change ${fieldHelp('cotDelta')}</th>
-          <th>Floorboards ${fieldHelp('floorboards')}</th><th>Supply tent ${fieldHelp('supplyTents')}</th><th>Special request</th>${canClose ? '<th>Season</th>' : ''}
-        </tr></thead><tbody>${rows}</tbody>
-      </table>
-    </div>
-    ${week.plan ? renderPlanSummary(camp, week) : `<div class="card empty section"><div class="empty-mark">↝</div><h2>No instructions calculated yet</h2><p>Enter this week’s requests, then calculate the changeover.</p></div>`}`;
+  const legacy = allSites(camp).filter((site) => n(week.sites[site.id].legacyHeadcount) > 0);
+  const previous = previousWeekStatus(camp, week);
+  const review = reviewSummary();
+  return `<div class="page-head"><div><div class="eyebrow">Requests and current inventory</div><h1>Weekly plan</h1><p class="subtitle">Track each troop, then review requests and attendance estimates.</p><button class="review-status-summary" data-action="review-estimates"><strong>${review.sites ? `${review.sites} site${review.sites === 1 ? '' : 's'} need review` : 'Attendance review clear'}</strong>${review.sites ? ` · ${review.waiting} waiting · ${review.notContacted} not contacted · ${review.blank} blank request${review.blank === 1 ? '' : 's'}` : ''}${review.over ? ` · ${review.over} over occupancy` : ''}</button></div><div class="button-row"><button class="btn" data-action="review-estimates">Review attendance estimates</button><button class="btn" data-action="zero-column">Clear or Zero Fields…</button><button class="btn primary" data-action="calculate-plan">Calculate changeover</button></div></div>
+    ${week.number > 1 && !previous.ready ? `<div class="notice warn"><div><strong>Previous final counts are incomplete.</strong><p>Requests can still be entered. Calculating will offer an override when needed.</p><button class="btn small" data-route="counts">Enter final counts</button></div></div>` : ''}
+    ${legacy.length ? `<details class="section"><summary>Older Unclassified Attendance Data</summary><p>These totals were saved before attendance was divided into Male Leaders, Female Leaders, Male Youth, and Female Youth. The planner preserves them so older information is not lost, but it will not guess the breakdown. Leave them alone if they are only test data.</p>${legacy.map((site) => `<div>Site ${escapeHtml(site.label)}: ${n(week.sites[site.id].legacyHeadcount)} people</div>`).join('')}</details>` : ''}
+    <div class="table-shell section weekly-scroll" tabindex="0" aria-label="Weekly plan; scroll for additional sites and columns"><table class="weekly-table"><thead><tr>${fields.map(([id, defaultLabel]) => { const label = state.weeklyFieldLabels[id] || defaultLabel; return `<th class="weekly-col-${id}">${escapeHtml(label)}${({troopCount:'How many separate troops are sharing this site. The default is one.',troopName:'Each troop name or number at this site.',arrival:'Sunday, Early, or Stayover for each troop.',contact:'Track each troop as Not Contacted, Waiting for Numbers, or Responded.',maleLeaders:'Optional attendance for each troop. Each troop and sleeping group is rounded separately when suggesting tents.',femaleLeaders:'Optional attendance for each troop. Each troop and sleeping group is rounded separately when suggesting tents.',maleYouth:'Optional attendance for each troop. Each troop and sleeping group is rounded separately when suggesting tents.',femaleYouth:'Optional attendance for each troop. Each troop and sleeping group is rounded separately when suggesting tents.',requestedTents:`The suggested value is the minimum number of tents needed while following Scouting America's Youth Protection and tenting guidelines.`,requestedCots:`The suggested value is the minimum number of cots needed while following Scouting America's Youth Protection and tenting guidelines.`,specialRequest:'Printed for hill team leaders when the Notes field is enabled under Printed Grid Fields.',commissionerNotes:'Private by default. It only prints when explicitly enabled under Printed Grid Fields.'}[id] ? inlineHelp(label, {troopCount:'How many separate troops are sharing this site. The default is one.',troopName:'Each troop name or number at this site.',arrival:'Sunday, Early, or Stayover for each troop.',contact:'Track each troop as Not Contacted, Waiting for Numbers, or Responded.',maleLeaders:'Optional attendance for each troop. Each troop and sleeping group is rounded separately when suggesting tents.',femaleLeaders:'Optional attendance for each troop. Each troop and sleeping group is rounded separately when suggesting tents.',maleYouth:'Optional attendance for each troop. Each troop and sleeping group is rounded separately when suggesting tents.',femaleYouth:'Optional attendance for each troop. Each troop and sleeping group is rounded separately when suggesting tents.',requestedTents:`The suggested value is the minimum number of tents needed while following Scouting America's Youth Protection and tenting guidelines.`,requestedCots:`The suggested value is the minimum number of cots needed while following Scouting America's Youth Protection and tenting guidelines.`,specialRequest:'Printed for hill team leaders when the Notes field is enabled under Printed Grid Fields.',commissionerNotes:'Private by default. It only prints when explicitly enabled under Printed Grid Fields.'}[id]) : '')}</th>`; }).join('')}</tr></thead><tbody>${rows}</tbody></table></div>
+    ${week.plan ? renderPlanSummary(camp, week) : ''}`;
 }
 
 function decisionHtml(decision, camp, week) {
@@ -697,7 +985,8 @@ function statisticsFor(camp, weeks, hillId = 'all') {
     requested: { tents: 0, cots: 0 }, recommendedStakes: 0,
     occupied: 0, open: 0, early: 0, closed: 0, people: 0, headcountsEntered: 0,
     redTags: { tents: 0, cots: 0, floorboards: 0 },
-    calculatedWeeks: 0, transfers: 0
+    calculatedWeeks: 0, transfers: 0, reviewSites: 0, waitingSites: 0, notContactedSites: 0,
+    blankRequestSites: 0, overCapacitySites: 0, peopleOverCapacity: 0
   };
   const sites = new Map();
   const routes = new Map();
@@ -718,8 +1007,25 @@ function statisticsFor(camp, weeks, hillId = 'all') {
           item.occupied += 1;
           if (record.arrival === 'early') totals.early += 1;
         }
-        if (record.headcount !== null && record.headcount !== '') {
-          totals.people += n(record.headcount); totals.headcountsEntered += 1; item.people += n(record.headcount);
+        const enteredPeople = attendanceEstimate(record).cots;
+        if (enteredPeople > 0) {
+          totals.people += enteredPeople; totals.headcountsEntered += 1; item.people += enteredPeople;
+        }
+        if (record.occupancy === 'troop' && !record.closeForSeason) {
+          totals.contacts ||= { 'not-contacted': 0, waiting: 0, responded: 0 };
+          totals.attendance ||= Object.fromEntries(ATTENDANCE_FIELDS.map(([id]) => [id, 0]));
+          for (const troop of record.troops || []) totals.contacts[troop.contact] = (totals.contacts[troop.contact] || 0) + 1;
+          for (const [id] of ATTENDANCE_FIELDS) totals.attendance[id] += n(record.attendance?.[id]);
+          totals.estimatedSites = (totals.estimatedSites || 0) + (Object.values(record.requestSources || {}).some((source) => source.type === 'attendance') ? 1 : 0);
+          const hasWaiting = record.troops.some((troop) => troop.contact === 'waiting');
+          const hasNotContacted = record.troops.some((troop) => troop.contact === 'not-contacted');
+          const hasBlank = requestBlank(record,'requestedTents') || requestBlank(record,'requestedCots');
+          if (hasWaiting || hasNotContacted || hasBlank) totals.reviewSites += 1;
+          if (hasWaiting) totals.waitingSites += 1;
+          if (hasNotContacted) totals.notContactedSites += 1;
+          if (hasBlank) totals.blankRequestSites += 1;
+          const capacity = occupancyWarning(site, record);
+          if (capacity) { totals.overCapacitySites += 1; totals.peopleOverCapacity += capacity.over; }
         }
         totals.redTags.tents += n(record.redTagTents);
         totals.redTags.cots += n(record.redTagCots);
@@ -795,6 +1101,8 @@ function renderStatistics(camp, active) {
       ${statCard('Road pickups', `${totals.roadOut.tents} tents · ${totals.roadOut.cots} cots`, 'Return Extras and Money Roll')}
       ${statCard('Recommended stakes', totals.recommendedStakes.toLocaleString(), 'Recommendation, not inventory used')}
       ${statCard('Red Tag items', (totals.redTags.tents + totals.redTags.cots + totals.redTags.floorboards).toLocaleString(), `${totals.redTags.tents} tents · ${totals.redTags.cots} cots · ${totals.redTags.floorboards} floorboards`)}
+      ${statCard('Sites needing contact review', totals.reviewSites.toLocaleString(), `${totals.waitingSites} waiting · ${totals.notContactedSites} not contacted · ${totals.blankRequestSites} blank requests`)}
+      ${statCard('Over configured occupancy', totals.overCapacitySites.toLocaleString(), `${totals.peopleOverCapacity} total people above advisory maximums`)}
     </div>
     <section class="section grid two">
       <div class="card card-pad"><h2>Site highlights</h2>
@@ -806,7 +1114,9 @@ function renderStatistics(camp, active) {
       </div>
       <div class="card card-pad"><h2>Attendance and site status</h2>
         <div class="grid two"><div><span class="stat-label">People recorded</span><div class="stat-value">${totals.people}</div><div class="stat-note">Scouts and leaders across ${totals.headcountsEntered} entered site total${totals.headcountsEntered === 1 ? '' : 's'}</div></div><div><span class="stat-label">Early arrivals</span><div class="stat-value">${totals.early}</div><div class="stat-note">Occupied site-weeks</div></div><div><span class="stat-label">Open sites</span><div class="stat-value">${totals.open}</div></div><div><span class="stat-label">Closed for season</span><div class="stat-value">${totals.closed}</div></div></div>
-        ${totals.headcountsEntered ? '' : '<div class="notice info section"><span class="notice-icon">i</span><div><strong>Attendance is optional</strong><p>Enable and enter Total People at Site on the Weekly Plan to unlock attendance totals. Cot requests are never treated as headcount.</p></div></div>'}
+        ${totals.headcountsEntered ? '' : '<p class="section">Attendance is optional. Enter the four attendance categories to include people in these totals. Missing attendance is not inferred from equipment requests.</p>'}
+        <h3 class="section">Attendance breakdown</h3><p>${ATTENDANCE_FIELDS.map(([id, label]) => `${n(totals.attendance?.[id])} ${label}`).join(' · ')}</p>
+        <h3 class="section">Troop responses</h3><p>${n(totals.contacts?.['not-contacted'])} not contacted · ${n(totals.contacts?.waiting)} contacted, waiting for numbers · ${n(totals.contacts?.responded)} responded with numbers</p><p>${n(totals.estimatedSites)} site requests include attendance estimates.</p><small>Summer totals count each troop once per scheduled week, not unique troops across the summer.</small>
       </div>
     </section>
     <section class="card card-pad section"><h2>${statisticsScope === 'summer' ? 'Difficulty by week' : 'Selected week difficulty'}</h2><div class="stats-leaderboard">${data.weekly.map((item) => `<div class="stats-row"><strong>${escapeHtml(item.name)}</strong><div class="stats-bar"><span style="width:${item.calculated ? Math.max(2, item.difficulty / maxDifficulty * 100) : 0}%"></span></div><span class="stats-number">${item.calculated ? item.difficulty.toLocaleString() : 'Not calculated'}</span></div>`).join('')}</div></section>
@@ -832,6 +1142,8 @@ function renderPrint(camp, week) {
         ${setting('showResponsible','Include Responsible field','Adds an assignee blank to recount sheets and task slips.',settings.showResponsible)}
         ${setting('showStakes','Show stake recommendations','Print recommended total and additional stakes. Stakes are not inventory.',settings.showStakes)}
         ${setting('showNotes','Show Notes on master grid','Gives Notes a wider column. Turn this off when you need more room for the equipment columns.',settings.showNotes)}
+        ${setting('showHillDifficulty','Show hill difficulty on master grid','Prints the selected week’s unitless difficulty score beside each hill name.',settings.showHillDifficulty)}
+        ${setting('showHillWalking','Show hill walking on master grid','Prints the selected week’s approximate feet walked beside each hill name.',settings.showHillWalking)}
       </div>
     </div>
     <section class="section"><div class="section-head"><div><h2>Hills included</h2><p>Leave every hill selected for the normal packet.</p></div></div><div class="button-row">${camp.hills.map((hill) => `<label class="btn"><input type="checkbox" data-print-hill="${hill.id}" ${(settings.selectedHills.length === 0 || settings.selectedHills.includes(hill.id)) ? 'checked' : ''}> ${escapeHtml(hill.name)}</label>`).join('')}</div></section>
@@ -874,16 +1186,16 @@ function renderConfigOverview() {
     ['safety','Backup & Safety','Complete backups, recovery, app version, and save status.'],
     ['about','Updates & About','Version information, support contacts, and future update availability.']
   ];
-  return `<div class="config-cards">${links.map(([id,title,text]) => `<button class="card config-card" data-config-page="${id}"><span class="config-card-icon">${id === 'commands' ? '↕' : '›'}</span><span><strong>${title}</strong><small>${text}</small></span></button>`).join('')}</div>`;
+  return `<div class="config-cards">${links.map(([id,title,text]) => `<button class="card config-card" data-config-page="${id}"><span><strong>${title}</strong><small>${text}</small></span></button>`).join('')}</div>`;
 }
 
 function siteDefaultsTable(camp) {
-  const rows = camp.hills.map((hill) => `<tr class="hill-row"><td colspan="5">${escapeHtml(hill.name)}</td></tr>${hill.sites.map((site) => `<tr><td class="site-cell">Site ${escapeHtml(site.label)}</td><td><input class="cell-input" type="number" min="0" data-site-field="floorboardsPresent" data-site-id="${site.id}" value="${n(site.floorboardsPresent)}"></td><td><input class="cell-input" type="number" min="0" data-site-field="picnicTables" data-site-id="${site.id}" value="${n(site.picnicTables)}" placeholder="Optional"></td><td><input class="cell-input cell-note" data-site-field="permanentNote" data-site-id="${site.id}" value="${escapeHtml(site.permanentNote || '')}" placeholder="Optional permanent note"></td><td><span class="tag">${camp.weeks.length} weeks</span></td></tr>`).join('')}`).join('');
-  return `<section class="card card-pad"><div class="section-head"><div><h2>Site defaults</h2><p>Permanent reference values. Weekly final counts do not silently overwrite them.</p></div></div><div class="table-shell"><table><thead><tr><th>Site</th><th>Floorboards in Site</th><th>Picnic Tables</th><th>Permanent note</th><th>Applied to</th></tr></thead><tbody>${rows}</tbody></table></div></section>`;
+  const rows = camp.hills.map((hill) => `<tr class="hill-row"><td colspan="6">${escapeHtml(hill.name)}</td></tr>${hill.sites.map((site) => `<tr><td class="site-cell">Site ${escapeHtml(site.label)}</td><td><input class="cell-input" type="number" min="0" data-site-field="floorboardsPresent" data-site-id="${site.id}" value="${n(site.floorboardsPresent)}"></td><td><input class="cell-input" type="number" min="0" data-site-field="picnicTables" data-site-id="${site.id}" value="${n(site.picnicTables)}" placeholder="Optional"></td><td><input class="cell-input occupancy-input" type="number" min="0" data-site-field="maximumOccupancy" data-site-id="${site.id}" value="${n(site.maximumOccupancy) || ''}" placeholder="No maximum occupancy"></td><td><input class="cell-input cell-note" data-site-field="permanentNote" data-site-id="${site.id}" value="${escapeHtml(site.permanentNote || '')}" placeholder="Optional permanent note"></td><td><span class="tag">${camp.weeks.length} weeks</span></td></tr>`).join('')}`).join('');
+  return `<section class="card card-pad"><div class="section-head"><div><h2>Site defaults</h2><p>Permanent reference values. Weekly final counts do not silently overwrite them.</p></div></div><div class="table-shell site-defaults-shell"><table class="site-defaults-table"><thead><tr><th>Site</th><th>Floorboards in Site</th><th>Picnic Tables</th><th>Maximum Occupancy ${inlineHelp('Maximum Occupancy','An advisory planning value. Exceeding it produces a warning but never blocks entry, calculation, printing, or exporting. Leave blank or enter zero when no maximum is known.')}</th><th>Permanent note</th><th>Applied to</th></tr></thead><tbody>${rows}</tbody></table></div></section>`;
 }
 
 function renderCampSetup(camp) {
-  return `<div class="config-stack"><section class="card card-pad"><h2>Camp and season</h2><div class="form-grid section"><div class="field"><label>Camp name</label><input data-camp-field="name" value="${escapeHtml(camp.name)}"></div><div class="field"><label>Season year ${inlineHelp('Season year','This identifies the summer. New Season preserves this camp and creates a clean copy.')}</label><input type="number" min="2000" max="2200" data-camp-field="year" value="${camp.year}"></div><div class="field full"><label>Equipment storage location ${inlineHelp('Equipment storage location','The camp-wide building or area that stores tents and cots. Blackhawk calls it the Basement. This name is used throughout the app and commissioner instructions.')}</label><input data-inventory-field="storageLocation" value="${escapeHtml(camp.inventory.storageLocation || 'Basement')}" placeholder="Basement"></div></div><div class="button-row section"><button class="btn primary" data-action="new-season">New season from this camp</button><button class="btn" data-action="add-camp">Add new camp</button><button class="btn" data-action="restore-blackhawk">Restore Blackhawk template</button><button class="btn danger" data-action="delete-camp">Delete this camp</button></div></section><section class="card card-pad"><h2>Weeks</h2><p class="subtitle">${camp.weeks.length} weeks are currently saved for this season.</p><div class="button-row section"><button class="btn" data-action="add-week">Add week</button><button class="btn danger" data-action="remove-week" ${camp.weeks.length <= 1 ? 'disabled' : ''}>Delete last week</button></div></section><section class="card card-pad"><h2>Optional weekly fields</h2><div class="setting-row"><div class="setting-copy"><strong>Show Troop and Total People at Site</strong><p>These fields are optional and support recommendations, attendance, and site-use statistics. Zero people creates no recommendation and no warning.</p></div><label class="switch"><input type="checkbox" data-print-field="showTroopFields" ${state.printSettings.showTroopFields !== false ? 'checked' : ''}><span></span></label></div></section><section class="card card-pad"><h2>Hills and sites</h2>${camp.hills.map((hill) => `<div class="setting-row"><div class="setting-copy"><strong>${escapeHtml(hill.name)}</strong><p>${hill.sites.length} sites · ${Object.values(hill.distances || {}).filter((v) => v !== null && v !== '').length} distances entered</p></div><button class="btn small" data-action="edit-hill" data-hill-id="${hill.id}">Edit</button></div>`).join('')}<div class="button-row section"><button class="btn" data-action="add-hill">Add hill</button></div></section>${siteDefaultsTable(camp)}</div>`;
+  return `<div class="config-stack"><section class="card card-pad"><h2>Camp and season</h2><div class="form-grid section"><div class="field"><label>Camp name</label><input data-camp-field="name" value="${escapeHtml(camp.name)}"></div><div class="field"><label>Season year ${inlineHelp('Season year','This identifies the summer. New Season preserves this camp and creates a clean copy.')}</label><input type="number" min="2000" max="2200" data-camp-field="year" value="${camp.year}"></div><div class="field full"><label>Equipment storage location ${inlineHelp('Equipment storage location','The camp-wide building or area that stores tents and cots. Blackhawk calls it the Basement. This name is used throughout the app and commissioner instructions.')}</label><input data-inventory-field="storageLocation" value="${escapeHtml(camp.inventory.storageLocation || 'Basement')}" placeholder="Basement"></div></div><div class="button-row section"><button class="btn primary" data-action="new-season">New season from this camp</button><button class="btn" data-action="add-camp">Add new camp</button><button class="btn" data-action="restore-blackhawk">Restore Blackhawk template</button><button class="btn danger" data-action="delete-camp">Delete this camp</button></div></section><section class="card card-pad"><h2>Weeks</h2><p class="subtitle">${camp.weeks.length} weeks are currently saved for this season.</p><div class="button-row section"><button class="btn" data-action="add-week">Add week</button><button class="btn danger" data-action="remove-week" ${camp.weeks.length <= 1 ? 'disabled' : ''}>Delete last week</button></div></section><section class="card card-pad"><h2>Optional weekly fields</h2><p>Use Grid Fields to choose digital Weekly Plan columns and printed columns independently. Attendance, troop tracking, and commissioner notes are optional.</p></section><section class="card card-pad"><h2>Hills and sites</h2>${camp.hills.map((hill) => `<div class="setting-row"><div class="setting-copy"><strong>${escapeHtml(hill.name)}</strong><p>${hill.sites.length} sites · ${Object.values(hill.distances || {}).filter((v) => v !== null && v !== '').length} distances entered</p></div><button class="btn small" data-action="edit-hill" data-hill-id="${hill.id}">Edit</button></div>`).join('')}<div class="button-row section"><button class="btn" data-action="add-hill">Add hill</button></div></section>${siteDefaultsTable(camp)}</div>`;
 }
 
 function renderInventory(camp) {
@@ -926,11 +1238,8 @@ function hydrateCommandLayoutEditor() {
   const layout = state.printSettings.commandLayout;
   const preview = document.querySelector('.command-preview');
   if (preview) preview.outerHTML = sampleCommandPreview(layout);
-  const refreshedPreview = document.querySelector('.command-preview');
-  const layoutGrid = document.querySelector('.command-layout-grid');
-  if (refreshedPreview && layoutGrid) layoutGrid.append(refreshedPreview);
   const builder = document.querySelector('[data-command-builder]');
-  if (builder?.previousElementSibling) builder.previousElementSibling.textContent = 'Drag rows to reorder them. Use ← and → to place a block in the left or right column of a constrained, safe card.';
+  if (builder?.previousElementSibling) builder.previousElementSibling.textContent = 'Drag sections or use ↑ and ↓ to change their order. Use ← and → to place each section on the left or right side of the printed card.';
   document.querySelectorAll('[data-command-block]').forEach((block) => {
     const actions = block.querySelector('.block-actions');
     if (!actions || actions.querySelector('[data-action="command-column"]')) return;
@@ -948,7 +1257,7 @@ function renderCommandLayout() {
   const layout = state.printSettings.commandLayout;
   const labels = {title:'Site / action title',wait:'Wait for supplies',instructions:'Main instructions',floorboards:'Floorboards dropped',final:'Final total',done:'Done checkbox',responsible:'Responsible line'};
   const required = new Set(['title','instructions','final']);
-  return `<div class="grid command-layout-grid"><section class="card card-pad"><h2>Command organization</h2><p class="subtitle">Drag rows to reorder them. They snap into a safe printed-card structure.</p><div class="command-builder section" data-command-builder>${layout.order.map((id,index) => `<div class="command-block" draggable="true" data-command-block="${id}"><span class="drag-handle">⋮⋮</span><strong>${labels[id]}</strong><div class="block-actions"><label><input type="checkbox" data-command-visible="${id}" ${!layout.hidden.includes(id) ? 'checked' : ''} ${required.has(id) ? 'disabled' : ''}> Show</label><button class="mini-button" data-action="move-command-block" data-direction="up" data-block="${id}" ${index === 0 ? 'disabled' : ''}>↑</button><button class="mini-button" data-action="move-command-block" data-direction="down" data-block="${id}" ${index === layout.order.length - 1 ? 'disabled' : ''}>↓</button></div></div>`).join('')}</div><div class="button-row section"><button class="btn" data-action="restore-command-layout">Restore command defaults</button></div></section><section class="card card-pad"><h2>Card appearance</h2><div class="form-grid section"><div class="field"><label>Spacing</label><select data-command-option="compact"><option value="true" ${layout.compact ? 'selected' : ''}>Compact</option><option value="false" ${!layout.compact ? 'selected' : ''}>Standard</option></select></div><div class="field"><label>Print size</label><select data-command-option="printSize"><option value="normal" ${layout.printSize === 'normal' ? 'selected' : ''}>Normal</option><option value="large" ${layout.printSize === 'large' ? 'selected' : ''}>Larger</option></select></div><div class="field"><label>Responsible line</label><select data-command-option="responsiblePosition"><option value="bottom" ${layout.responsiblePosition === 'bottom' ? 'selected' : ''}>Bottom</option><option value="beside-done" ${layout.responsiblePosition === 'beside-done' ? 'selected' : ''}>Beside Done</option><option value="hidden" ${layout.responsiblePosition === 'hidden' ? 'selected' : ''}>Hidden</option></select></div><div class="field"><label>Final Total emphasis</label><select data-command-option="finalEmphasis"><option value="normal" ${layout.finalEmphasis === 'normal' ? 'selected' : ''}>Normal</option><option value="bold" ${layout.finalEmphasis === 'bold' ? 'selected' : ''}>Bold</option><option value="boxed" ${layout.finalEmphasis === 'boxed' ? 'selected' : ''}>Boxed</option></select></div><div class="field"><label>Separators</label><select data-command-option="separator"><option value="dashed" ${layout.separator === 'dashed' ? 'selected' : ''}>Dashed cut line</option><option value="solid" ${layout.separator === 'solid' ? 'selected' : ''}>Solid divider</option><option value="space" ${layout.separator === 'space' ? 'selected' : ''}>Spacing only</option></select></div><div class="field"><label>Labels</label><select data-command-option="labelStyle"><option value="full" ${layout.labelStyle === 'full' ? 'selected' : ''}>Full labels</option><option value="compact" ${layout.labelStyle === 'compact' ? 'selected' : ''}>Compact labels</option></select></div></div><div class="setting-row"><div class="setting-copy"><strong>Show wave labels</strong></div><label class="switch"><input type="checkbox" data-command-option="showWaves" ${layout.showWaves ? 'checked' : ''}><span></span></label></div><div class="setting-row"><div class="setting-copy"><strong>Show job numbers</strong></div><label class="switch"><input type="checkbox" data-command-option="showJobs" ${layout.showJobs ? 'checked' : ''}><span></span></label></div><div class="command-preview section"><strong>WAVE 3 · JOB 2 — SITE 3 — FINAL SETUP — WAIT FOR SUPPLIES</strong><p>Wait for: 5 tents and 8 cots from Site 4</p><p>Set up: 1 tent | Store inside: 16 tents, 28 cots</p><p><b>FINAL TOTAL: 17 tents, 28 cots</b></p><small>□ Done &nbsp;&nbsp;&nbsp; Responsible: __________________</small></div></section></div>`;
+  return `<div class="grid command-layout-grid"><section class="card card-pad"><h2>Command organization</h2><p class="subtitle">Drag sections or use ↑ and ↓ to change their order. Use ← and → to place each section on the left or right side of the printed card.</p><div class="command-builder section" data-command-builder>${layout.order.map((id,index) => `<div class="command-block" draggable="true" data-command-block="${id}"><span class="drag-handle">⋮⋮</span><strong>${labels[id]}</strong><div class="block-actions"><label><input type="checkbox" data-command-visible="${id}" ${!layout.hidden.includes(id) ? 'checked' : ''} ${required.has(id) ? 'disabled' : ''}> Show</label><button class="mini-button" data-action="move-command-block" data-direction="up" data-block="${id}" ${index === 0 ? 'disabled' : ''}>↑</button><button class="mini-button" data-action="move-command-block" data-direction="down" data-block="${id}" ${index === layout.order.length - 1 ? 'disabled' : ''}>↓</button></div></div>`).join('')}</div><div class="button-row section"><button class="btn" data-action="restore-command-layout">Restore command defaults</button></div></section><section class="card card-pad"><h2>Card appearance</h2><div class="form-grid section"><div class="field"><label>Spacing</label><select data-command-option="compact"><option value="true" ${layout.compact ? 'selected' : ''}>Compact</option><option value="false" ${!layout.compact ? 'selected' : ''}>Standard</option></select></div><div class="field"><label>Print size</label><select data-command-option="printSize"><option value="normal" ${layout.printSize === 'normal' ? 'selected' : ''}>Normal</option><option value="large" ${layout.printSize === 'large' ? 'selected' : ''}>Larger</option></select></div><div class="field"><label>Responsible line</label><select data-command-option="responsiblePosition"><option value="bottom" ${layout.responsiblePosition === 'bottom' ? 'selected' : ''}>Bottom</option><option value="beside-done" ${layout.responsiblePosition === 'beside-done' ? 'selected' : ''}>Beside Done</option><option value="hidden" ${layout.responsiblePosition === 'hidden' ? 'selected' : ''}>Hidden</option></select></div><div class="field"><label>Final Total emphasis</label><select data-command-option="finalEmphasis"><option value="normal" ${layout.finalEmphasis === 'normal' ? 'selected' : ''}>Normal</option><option value="bold" ${layout.finalEmphasis === 'bold' ? 'selected' : ''}>Bold</option><option value="boxed" ${layout.finalEmphasis === 'boxed' ? 'selected' : ''}>Boxed</option></select></div><div class="field"><label>Separators</label><select data-command-option="separator"><option value="dashed" ${layout.separator === 'dashed' ? 'selected' : ''}>Dashed cut line</option><option value="solid" ${layout.separator === 'solid' ? 'selected' : ''}>Solid divider</option><option value="space" ${layout.separator === 'space' ? 'selected' : ''}>Spacing only</option></select></div><div class="field"><label>Labels</label><select data-command-option="labelStyle"><option value="full" ${layout.labelStyle === 'full' ? 'selected' : ''}>Full labels</option><option value="compact" ${layout.labelStyle === 'compact' ? 'selected' : ''}>Compact labels</option></select></div></div><div class="setting-row"><div class="setting-copy"><strong>Show wave labels</strong></div><label class="switch"><input type="checkbox" data-command-option="showWaves" ${layout.showWaves ? 'checked' : ''}><span></span></label></div><div class="setting-row"><div class="setting-copy"><strong>Show job numbers</strong></div><label class="switch"><input type="checkbox" data-command-option="showJobs" ${layout.showJobs ? 'checked' : ''}><span></span></label></div></section><section class="card card-pad command-preview-panel"><h2>Command Card Preview</h2><p class="subtitle">This sample updates immediately to show how the selected organization and appearance settings will print. It does not change the active week’s commands.</p><div class="command-preview section"><strong>Preview loading…</strong></div></section></div>`;
 }
 
 function renderLegacyAdvancedCamp(camp) {
@@ -1013,7 +1322,11 @@ function renderDistances(camp) {
 }
 
 function renderColumns() {
-  return `<div class="card card-pad"><div class="section-head"><div><h2>Master-grid fields</h2><p>Rename, explain, or hide printed fields. Calculations keep their stable internal meanings.</p></div><button class="btn" data-action="restore-columns">Restore default fields</button></div>
+  const tabs = `<div class="tabs grid-field-tabs"><button class="tab ${gridFieldsTab === 'weekly' ? 'active' : ''}" data-action="grid-tab" data-value="weekly" aria-pressed="${gridFieldsTab === 'weekly'}">Weekly Plan Fields</button><button class="tab ${gridFieldsTab === 'printed' ? 'active' : ''}" data-action="grid-tab" data-value="printed" aria-pressed="${gridFieldsTab === 'printed'}">Printed Grid Fields</button></div>`;
+  const help = { site:'The campsite name or number. It stays visible while you scroll.',troopCount:'How many troops share this site. Each troop gets separate name, arrival, contact, and attendance controls.',occupancy:'Whether the site houses a troop or is OPEN.',troopName:'The troop name or number for each troop sharing the site.',arrival:'Sunday, Early, or Stay-over for each troop. Arrival affects command order.',contact:'Tracks whether each troop was contacted and whether it supplied numbers.',maleLeaders:'Optional per-troop count. Each troop and sleeping group is rounded separately for tent suggestions.',femaleLeaders:'Optional per-troop count. Each troop and sleeping group is rounded separately for tent suggestions.',maleYouth:'Optional per-troop count. Each troop and sleeping group is rounded separately for tent suggestions.',femaleYouth:'Optional per-troop count. Each troop and sleeping group is rounded separately for tent suggestions.',currentTotalTents:'All usable tents currently at the site, including supply tents.',currentCots:'All usable cots currently at the site.',requestedTents:'Sleeping tents requested by the troop or accepted from attendance.',requestedCots:'Cots requested by the troop or accepted from attendance.',tentDelta:'Planned total tents minus current total tents.',cotDelta:'Planned cots minus current cots.',requestedFloorboards:'Floorboards to leave down. This follows Needed Tents unless overridden.',supplyTents:'Calculated number of tents used to store equipment.',specialRequest:'Notes for hill team leaders. They print only when Notes is enabled under Printed Grid Fields.',commissionerNotes:'Private by default. They print only when deliberately enabled.',season:'Closes a site for the season when available.' };
+  const columnHead = '<div class="column-config-head"><span>Field and explanation</span><span>Column name</span><span>Show</span></div>';
+  if (gridFieldsTab === 'weekly') return `${tabs}<section class="card card-pad"><div class="section-head"><div><h2>Weekly Plan Fields</h2><p>Rename, show, or hide digital columns. Hidden values remain saved. Printed columns are configured separately.</p></div><button class="btn" data-action="restore-weekly-fields">Restore default fields</button></div>${columnHead}${WEEKLY_FIELDS.map(([id, defaultLabel]) => { const label = state.weeklyFieldLabels[id] || defaultLabel; return `<div class="setting-row column-setting"><div class="setting-copy"><div class="field-name-line"><strong>${escapeHtml(label)}</strong>${inlineHelp(label, help[id] || 'Optional Weekly Plan field. Hiding it does not erase its saved value.')}</div><p>${escapeHtml(help[id] || 'Optional Weekly Plan field. Hiding it does not erase its saved value.')}</p></div><div class="column-controls"><input class="cell-input" data-weekly-label="${id}" value="${escapeHtml(label)}" aria-label="Weekly Plan column name for ${escapeHtml(label)}"><label class="switch"><input type="checkbox" data-weekly-visible="${id}" ${state.weeklyFields[id] !== false ? 'checked' : ''} ${id === 'site' ? 'disabled' : ''} aria-label="Show ${escapeHtml(label)}"><span></span></label></div></div>`; }).join('')}</section>`;
+  return `${tabs}<div class="card card-pad"><div class="section-head"><div><h2>Printed Grid Fields</h2><p>Rename, show, or hide printed columns. Optional tracking fields and commissioner notes print only when explicitly enabled here.</p></div><button class="btn" data-action="restore-columns">Restore default fields</button></div>${columnHead}
     ${state.columns.map((column) => `<div class="setting-row column-setting"><div class="setting-copy"><div class="field-name-line"><strong>${escapeHtml(column.label)}</strong>${fieldHelp(column.id)}</div><p>${escapeHtml(column.help)}</p></div><div class="column-controls"><input class="cell-input" data-column-label="${column.id}" value="${escapeHtml(column.label)}" aria-label="Printed label for ${escapeHtml(column.label)}"><label class="switch"><input type="checkbox" data-column-visible="${column.id}" ${column.visible ? 'checked' : ''} ${column.locked ? 'disabled' : ''}><span></span></label></div></div>`).join('')}
   </div>`;
 }
@@ -1042,8 +1355,8 @@ function renderUpdatesAbout() {
 
 function renderHelp() {
   const sections = [
-    ['getting-started','Getting started',`<p><strong>1. Select the correct camp and week.</strong> Use the two selectors at the top before entering anything. A season such as Camp Blackhawk 2026 is kept separately from later years.</p><p><strong>2. Confirm starting information.</strong> In Week 1, enter the equipment currently at each site. In later weeks, finish the prior week’s Final Counts so those verified totals become the next starting counts.</p><p><strong>3. Enter the new troop request.</strong> Open Weekly Plan, choose the site status and arrival type, then enter Needed Tents, Needed Cots, Floorboards, and any special request. Total People is optional. A positive headcount displays gray tent and cot suggestions; zero displays no recommendation, and the commissioner may always enter different values without a warning.</p><p><strong>4. Calculate and review.</strong> Calculate Changeover, resolve any supply-tent or storage-delivery decisions, and review each transfer and final target. Same-hill surplus is used before equipment from the camp storage location.</p><p><strong>5. Preview and print.</strong> Print & Export recalculates before building the packet. Check the master grid, hill commands, Final Counts sheets, and commissioner pickups or deliveries.</p><p><strong>6. Record what actually happened.</strong> At the end of changeover, enter Total Tents and Total Cots in Final Counts. Record optional floorboard, setup, responsible-person, note, and Red Tag information while it is fresh.</p><ul><li>Every edit autosaves locally; Save writes immediately for reassurance.</li><li>Use a .changeover Complete Backup before changing camps, hills, sites, weeks, or distances.</li><li>If a term is unclear, search this guide or use Copy All for AI to share the complete operating rules.</li></ul>`],
-    ['weekly-plan','Weekly Plan',`<p><strong>Current Tents</strong> and <strong>Current Cots</strong> describe what is physically at the site before work begins. Current Tents includes sleeping and supply tents. Red Tag equipment is logged separately and is automatically removed from usable site inventory.</p><p><strong>Needed Tents</strong> means sleeping tents requested by the arriving troop and excludes dedicated supply tents. <strong>Needed Cots</strong> is the requested cot count. Tent Change and Cot Change compare the calculated final total with the usable current total.</p><p><strong>Total People at Site</strong> means scouts plus leaders and defaults to zero. A positive number suggests one cot per person and one tent per two people,rounded up—for example, 11 people suggests 11 cots and 6 tents. Suggestions are gray guidance only. Zero gives no suggestion, and mismatched equipment and people counts are normal and never create warnings.</p><p>Lock Tents or Lock Cots when that item must stay at a site. Floorboards normally follow the tent request until the commissioner overrides them. Special Request is free text for unusual site-specific instructions.</p>`],
+    ['getting-started','Getting started',`<p><strong>1. Select the correct camp and week.</strong> Use the two selectors at the top before entering anything. A season such as Camp Blackhawk 2026 is kept separately from later years.</p><p><strong>2. Confirm starting information.</strong> In Week 1, enter the equipment currently at each site. In later weeks, finish the prior week’s Final Counts so those verified totals become the next starting counts.</p><p><strong>3. Enter the new troop request.</strong> Open Weekly Plan, choose the site status and arrival type, then enter Needed Tents, Needed Cots, Floorboards, and any special request. Attendance is optional: enter Male Leaders, Female Leaders, Male Youth, and Female Youth when known. Suggestions remain estimates until you click Use suggestion or approve the bulk review. Record each troop’s contact status as you call them. Confirmed troop requests may differ from attendance estimates.</p><p><strong>4. Calculate and review.</strong> Calculate Changeover, resolve any supply-tent or storage-delivery decisions, and review each transfer and final target. Same-hill surplus is used before equipment from the camp storage location.</p><p><strong>5. Preview and print.</strong> Print & Export recalculates before building the packet. Check the master grid, hill commands, Final Counts sheets, and commissioner pickups or deliveries.</p><p><strong>6. Record what actually happened.</strong> At the end of changeover, enter Total Tents and Total Cots in Final Counts. Record optional floorboard, setup, responsible-person, note, and Red Tag information while it is fresh.</p><ul><li>Every edit autosaves locally; Save writes immediately for reassurance.</li><li>Use a .changeover Complete Backup before changing camps, hills, sites, weeks, or distances.</li><li>If a term is unclear, search this guide or use Copy All for AI to share the complete operating rules.</li></ul>`],
+    ['weekly-plan','Weekly Plan',`<p><strong>Current Tents</strong> and <strong>Current Cots</strong> describe what is physically at the site before work begins. Current Tents includes sleeping and supply tents. Red Tag equipment is logged separately and is automatically removed from usable site inventory.</p><p><strong>Needed Tents</strong> means sleeping tents requested by the arriving troop and excludes dedicated supply tents. <strong>Needed Cots</strong> is the requested cot count. Tent Change and Cot Change compare the calculated final total with the usable current total.</p><p><strong>Attendance:</strong> enter Male Leaders, Female Leaders, Male Youth, and Female Youth for each troop when known. All default to zero and are optional. Suggested cots equal everyone entered. Suggested tents are calculated separately for every troop and sleeping group, with each group divided by two and rounded upward before the results are added. For example, three male youth plus one female youth require three tents and four cots. These are minimum planning suggestions that follow Scouting America tenting guidance; they never silently replace a troop’s request.</p><p><strong>Attendance Request Review:</strong> the review opens for troop sites with blank requests, troops waiting for numbers, troops not contacted, or attendance above a configured site maximum. Each site card shows why it needs attention, the current request, troop attendance, and the available choices. Proceed Anyway temporarily treats blanks as zero for only that calculation or preview and does not change the Weekly Plan. Set Remaining Blanks to Zero permanently records intentional zeros after another confirmation. Apply Site Decisions saves the choices shown in the cards. Close or Cancel leaves the plan unchanged.</p><p><strong>Accepting an estimate:</strong> use the button below a blank request to accept that one suggestion, or use Attendance Request Review to compare every affected site. A manually entered zero is different from a blank request. Accepted values are labeled as attendance estimates; typing a replacement turns them back into commissioner-entered values.</p><p><strong>Troop tracking:</strong> record Not Contacted, Contacted — Waiting for Numbers, or Responded With Numbers for each troop. In Grid Fields, enable Number of Troops when a site is shared. Each troop then has its own name, arrival, contact status, and attendance. Equipment requests remain combined site totals. If any troop arrives early, the planner prepares the full site request for early arrival because equipment is not divided by troop. Reducing the troop count asks which records to keep and archives the others; increasing it restores archived records.</p><p><strong>Clearing test or old data:</strong> Clear or Zero Fields lets you select several fields at once. Numeric fields become zero, text fields are cleared, and arrival or contact fields return to their defaults. Nothing is selected initially, a confirmation is always required, and the whole operation can be undone as one action.</p><p><strong>Notes and visibility:</strong> Special Requests / Notes accompanies the printed team notes when enabled. Commissioner-Only Notes stay off printed grids unless deliberately enabled in Printed Grid Fields. Weekly Plan Fields controls digital visibility separately. Hiding a field keeps its data. The table has its own scroll area: column headings, hill names, and the Site column stay visible while you scroll. Earlier undivided attendance totals remain available under Preserved Earlier Attendance Totals; they are not guessed into the new categories.</p><p>Lock Tents or Lock Cots when that item must stay at a site. Floorboards normally follow the tent request until the commissioner overrides them. Special Request is free text for unusual site-specific instructions.</p>`],
     ['supply-tents','Supply tents',`<p>A dedicated supply tent is required whenever extra tents or cots remain at an occupied site. If a troop requests zero tents but requests cots, one tent is still needed to protect the cots from rain. A normal Sunday arrival usually has one tent set up with the remaining exact equipment stored inside; that tent only becomes a dedicated supply tent when surplus material remains.</p><p>When the planned site exceeds ${state.advanced.supplyTentTentThreshold} tents or ${state.advanced.supplyTentCotThreshold} cots, the commissioner chooses one or two supply tents.</p>`],
     ['optimizer','Calculate Changeover',`<p>The planner first uses same-hill surplus and selects the shortest available walking transfers. Tents, cots, and floorboards are routed independently. Basement deliveries come after same-hill surplus and normally use one or at most two drop sites per hill. Cross-hill transfers require commissioner approval.</p><p>Approximate walking assumes one equipment item per carrying trip and includes the return walk. A 1,000-foot route carrying seven items therefore estimates 14,000 total feet.</p>`],
     ['commands','Commands, waves, and jobs',`<p>Wave 1 contains ready work and takedown that can begin immediately. Wave 2 contains transfers, basement staging, Money Roll, and extras-to-road work. Wave 3 contains final setups waiting for incoming supplies. Job numbers restart at 1 within every wave.</p><p><strong>FINAL SETUP — READY</strong> may begin now. <strong>WAIT FOR SUPPLIES</strong> identifies exactly what must arrive first. The final total is the required physical equipment count after the job is complete.</p>`],
@@ -1053,7 +1366,7 @@ function renderHelp() {
     ['printing','Preview, printing, and export',`<p>Preview is the exact selected packet: current camp, week, hills, copy counts, fields, command organization, and commissioner sheet. Previewing recalculates first. Print sends that packet to the system print dialog; Export PDF saves it directly with a descriptive camp-and-week filename. Pages use US Letter and request single-sided printing.</p>`],
     ['statistics','Statistics',`<p>Statistics can cover any individual week or the entire summer and can be filtered by hill. Walking and difficulty are estimates based on calculated plans. Requests and optional total-people entries come from the commissioner. Recommended stakes are not actual inventory.</p><p>The Hill Scoreboard is a friendly comparison only; different distances, site counts, troop requests, and available inventory affect every hill’s workload. Red Tag totals summarize the Final Counts log.</p>`],
     ['inventory','Storage inventory',`<p>Beginning-of-season inventory is the original usable camp-wide supply and normally remains unchanged during the summer. Expected storage inventory subtracts the latest usable site totals and Red Tag losses. The storage name is configured per camp and defaults to Basement.</p><p>Supply Adjustment is a one-time transaction: +5 adds five usable items and −5 removes five. Commit it with Enter or by leaving the field; the entry returns to zero so it cannot be applied twice. A physical recount becomes the new known storage balance, and later supply adjustments are applied on top of that recount. Red Tags entered in Final Counts are already handled automatically and should not also be entered as supply adjustments.</p>`],
-    ['configuration','Camps, seasons, and distances',`<p>New Season copies hills, sites, floorboard defaults, distances, week count, and beginning inventory while keeping the previous summer unchanged. Structural changes belong in Advanced and should follow a Complete Backup. Same-hill distances are entered once per pair in feet; cross-hill distances are intentionally omitted.</p>`],
+    ['configuration','Camps, seasons, and distances',`<p>New Season copies hills, sites, floorboard defaults, distances, week count, and beginning inventory while keeping the previous summer unchanged. Structural changes belong in Advanced and should follow a Complete Backup. Same-hill distances are entered once per pair in feet; cross-hill distances are intentionally omitted.</p><p><strong>Site defaults</strong> are permanent reference records rather than weekly counts. Floorboards in Site supplies the starting reference, Picnic Tables and Permanent Note are optional commissioner records, and Maximum Occupancy is an advisory number. When recorded attendance exceeds that maximum, the Overview, Weekly Plan review, and Statistics identify the site and the number of people over. The warning never blocks calculations, printing, or entry; leave the maximum blank when none is known.</p><p><strong>Undo and Redo</strong> in the top bar keep up to 100 recent edits during the current app session. Undo restores the state before an edit; Redo reapplies an undone edit. Autosave writes the restored state just like an ordinary edit.</p>`],
     ['backup','Backups and recovery',`<p>A .changeover file contains every camp, hill, site, distance, week, request, count, setting, and print preference. Import always shows a preview and asks before replacing working data. Older .campplan backups are accepted for backward compatibility.</p>`],
     ['appearance','App Appearance and help',`<p>The top-right button switches directly between Light and Dark. Advanced → App Appearance also offers Follow System, interface size, Standard or High contrast, and Reset Appearance Settings. Interface size affects the screen only, not printed page dimensions.</p><p>If something is unclear or broken, first search this Field Guide. Copy Section shares one topic; Copy All for AI copies the complete manual so an assistant can answer with the same definitions. For a software problem, email or text Nick Baker using the contact information in the lower-left corner.</p>`]
   ];
@@ -1071,6 +1384,10 @@ function completeDistancesNeeded(camp, week) {
 function calculatePlan(force = false, options = {}) {
   const camp = activeCamp();
   const week = activeWeek();
+  if (!options.skipAttendanceReview && attendanceReviewSites().length) {
+    openAttendanceReview({ type: 'calculate', force, options });
+    return false;
+  }
   const previous = previousWeekStatus(camp, week);
   if (!force && !previous.ready) {
     showModal({
@@ -1111,6 +1428,10 @@ function setRecordField(siteId, field, rawValue, inputType) {
   else record[field] = rawValue;
   if (field === 'requestedTents') record.requestedTentsOverridden = rawValue !== '';
   if (field === 'requestedCots') record.requestedCotsOverridden = rawValue !== '';
+  if (field === 'requestedTents' || field === 'requestedCots') {
+    record.requestSources ??= {};
+    delete record.requestSources[field];
+  }
   if (field === 'requestedTents' && !record.floorboardsOverridden) record.requestedFloorboards = n(rawValue);
   if (field === 'requestedFloorboards') record.floorboardsOverridden = n(rawValue) !== n(record.requestedTents);
   if (field === 'occupancy' && rawValue === 'open') {
@@ -1199,7 +1520,7 @@ function gridRowsForExport(camp, week) {
       neededTents: n(record.requestedTents), neededCots: n(record.requestedCots),
       tentDelta: siteTentDelta(record), cotDelta: siteCotDelta(record),
       floorboards: n(record.requestedFloorboards), supplyTents: n(record.plannedSupplyTentsUp),
-      totalPeopleAtSite: record.headcount ?? '', redTagTents: n(record.redTagTents), redTagCots: n(record.redTagCots), redTagFloorboards: n(record.redTagFloorboards),
+      totalPeopleAtSite: attendanceEstimate(record).cots || '', redTagTents: n(record.redTagTents), redTagCots: n(record.redTagCots), redTagFloorboards: n(record.redTagFloorboards),
       note: [site.permanentNote, record.specialRequest].filter(Boolean).join(' · ')
     };
   }));
@@ -1246,7 +1567,12 @@ function masterGridPrint(camp, week, hills) {
   const head = columns.map((column) => `<th class="print-col-${column.id}">${escapeHtml(column.id === 'completed' && column.label === 'Completed' ? 'Done' : column.label)}</th>`).join('');
   let body = '';
   for (const hill of hills) {
-    body += `<tr><td colspan="${columns.length}" class="print-hill">${escapeHtml(hill.name)}</td></tr>`;
+    const hillStats = week.plan?.hillStats?.find((entry) => entry.hillId === hill.id);
+    const hillDetails = [];
+    if (state.printSettings.showHillDifficulty && hillStats) hillDetails.push(`Difficulty ${Number(hillStats.difficulty || 0).toLocaleString()}`);
+    if (state.printSettings.showHillWalking && hillStats) hillDetails.push(`Approx. ${Number(hillStats.walkingFeet ?? (hillStats.itemFeet || 0) * 2).toLocaleString()} ft walked`);
+    const hillHeading = [hill.name, ...hillDetails].join(' — ');
+    body += `<tr><td colspan="${columns.length}" class="print-hill">${escapeHtml(hillHeading)}</td></tr>`;
     for (const site of hill.sites) {
       const record = week.sites[site.id];
       const values = {
@@ -1258,6 +1584,12 @@ function masterGridPrint(camp, week, hills) {
         floorboards: n(record.requestedFloorboards),
         supplyTents: n(record.plannedSupplyTentsUp),
         stakes: recommendedStakes(n(record.plannedTotalTents ?? record.requestedTents)),
+        troopCount: record.troops?.length || 1,
+        troopName: escapeHtml((record.troops || []).map((troop, index) => troop.name || `Troop ${index + 1}`).join(' / ')),
+        arrival: escapeHtml((record.troops || []).map((troop, index) => `${troop.name || `Troop ${index + 1}`}: ${troop.arrival === 'normal' ? 'Sunday' : troop.arrival}`).join(' / ')),
+        contact: escapeHtml((record.troops || []).map((troop, index) => `${troop.name || `Troop ${index + 1}`}: ${CONTACT_STATUSES.find(([id]) => id === troop.contact)?.[1] || 'Not Contacted'}`).join(' / ')),
+        ...Object.fromEntries(ATTENDANCE_FIELDS.map(([id]) => [id, n(record.attendance?.[id])])),
+        commissionerNotes: escapeHtml(record.commissionerNotes || ''),
         notes: escapeHtml([record.arrival === 'early' ? 'EARLY ARRIVAL' : '', site.permanentNote, record.specialRequest].filter(Boolean).join(' · '))
       };
       body += `<tr>${columns.map((column) => `<td class="print-col-${column.id}">${values[column.id] ?? ''}</td>`).join('')}</tr>`;
@@ -1267,7 +1599,7 @@ function masterGridPrint(camp, week, hills) {
 }
 
 function countSheetsPrint(camp, week, hills) {
-  return hills.map((hill) => `<section class="print-page recount-page"><div class="print-title"><div><h1>${escapeHtml(hill.name)} Final Counts</h1><p>${escapeHtml(campDisplayName(camp))} · ${escapeHtml(week.name)}</p></div><p>After changeover</p></div><table class="print-table recount-table"><thead><tr><th>Site</th><th>Total<br>Tents *</th><th>Tents<br>Up</th><th>Supply<br>Tents Up</th><th>Total<br>Cots *</th><th>Floorboards<br>in Site</th><th>Floorboards<br>Dropped</th><th>Red Tag<br>Tents</th><th>Red Tag<br>Cots</th><th>Red Tag<br>Floorboards</th>${state.printSettings.showStakes ? '<th>Approx.<br>Stakes</th>' : ''}${state.printSettings.showResponsible ? '<th class="responsible-column">Responsible</th>' : ''}<th class="verified-column">Verified</th></tr></thead><tbody>${hill.sites.map((site) => `<tr><td>Site ${escapeHtml(site.label)}</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td>${state.printSettings.showStakes ? '<td></td>' : ''}${state.printSettings.showResponsible ? '<td class="responsible-column"></td>' : ''}<td class="verified-column"><span class="paper-check"></span></td></tr>`).join('')}</tbody></table><div class="printed-count-notes"><strong>Notes</strong><span></span><span></span><span></span></div><p class="print-footnote">* Total tents and total cots are required before the following week can be optimized. Red Tag fields are for logging only.</p></section>`).join('');
+  return hills.map((hill) => `<section class="print-page recount-page"><div class="print-title"><div><h1>${escapeHtml(hill.name)} Final Counts</h1><p>${escapeHtml(campDisplayName(camp))} · ${escapeHtml(week.name)}</p></div><p>After changeover</p></div><table class="print-table recount-table"><thead><tr><th>Site</th><th>Total<br>Tents *</th><th>Tents<br>Up</th><th>Supply<br>Tents Up</th><th>Total<br>Cots *</th><th>Floorboards<br>in Site</th><th>Floorboards<br>Dropped</th><th>Red Tag<br>Tents</th><th>Red Tag<br>Cots</th><th>Red Tag<br>Floorboards</th>${state.printSettings.showStakes ? '<th>Approx.<br>Stakes</th>' : ''}${state.printSettings.showResponsible ? '<th class="responsible-column">Responsible</th>' : ''}<th class="verified-column">Verified</th></tr></thead><tbody>${hill.sites.map((site) => `<tr><td>Site ${escapeHtml(site.label)}</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td>${state.printSettings.showStakes ? '<td></td>' : ''}${state.printSettings.showResponsible ? '<td class="responsible-column"></td>' : ''}<td class="verified-column"><span class="paper-check"></span></td></tr>`).join('')}</tbody></table><p class="print-footnote">* Total tents and total cots are required before the following week can be optimized. Red Tag fields are for logging only.</p><div class="printed-count-notes"><strong>Notes</strong>${'<span></span>'.repeat(6)}</div></section>`).join('');
 }
 
 function commandSheetsPrint(camp, week, hills) {
@@ -1293,7 +1625,7 @@ function commandSheetsPrint(camp, week, hills) {
       done: '<span class="task-done">□ Done</span>',
       responsible: state.printSettings.showResponsible && layout.responsiblePosition !== 'hidden' ? '<span class="responsible-blank">Responsible: <b aria-hidden="true"></b></span>' : ''
     };
-    const content = layout.order.filter(visible).filter((id) => !['done','responsible'].includes(id)).map((id) => `<div class="task-layout-block task-column-${layout.columns?.[id] === 2 ? 2 : 1}">${blocks[id]}</div>`).join('');
+    const content = layout.order.filter(visible).filter((id) => !['done','responsible'].includes(id)).map((id) => `<div class="task-layout-block task-block-${id} task-column-${layout.columns?.[id] === 2 ? 2 : 1}">${id === 'title' ? blocks[id].replace(escapeHtml(title), escapeHtml(title).replaceAll('EARLY ARRIVAL','EARLY&nbsp;ARRIVAL').replaceAll('WAIT FOR SUPPLIES','WAIT&nbsp;FOR&nbsp;SUPPLIES')) : blocks[id]}</div>`).join('');
     const meta = layout.order.filter(visible).filter((id) => ['done','responsible'].includes(id)).map((id) => blocks[id]).join('');
     return `<div class="task-slip separator-${layout.separator} ${layout.compact ? 'task-compact' : ''} task-size-${layout.printSize}"><div class="task-layout-grid">${content}</div>${meta ? `<div class="task-meta responsible-${layout.responsiblePosition}">${meta}</div>` : ''}</div>`;
   };
@@ -1390,11 +1722,26 @@ function newSeasonDialog() {
 }
 
 function zeroColumnDialog() {
+  const fields = [
+    ['currentTotalTents','Current Tents','zero'],['currentCots','Current Cots','zero'],
+    ['requestedTents','Needed Tents','zero'],['requestedCots','Needed Cots','zero'],
+    ['requestedFloorboards','Floorboards Requested','zero'],
+    ...ATTENDANCE_FIELDS.map(([id,label]) => [`attendance:${id}`,label,'zero']),
+    ['troopName','Troop Names / Numbers','clear'],['specialRequest','Special Requests / Notes','clear'],
+    ['commissionerNotes','Commissioner-Only Notes','clear'],['contact','Contact Status','default'],['arrival','Arrival','default']
+  ];
   showModal({
-    title: 'Zero a weekly column',
-    body: `<p>Choose one column to set to zero for every site in ${escapeHtml(activeWeek().name)}. This cannot affect the distance table.</p><div class="field section"><label>Column</label><select id="zero-column-field"><option value="currentTotalTents">Current tents</option><option value="currentCots">Current cots</option><option value="requestedTents">Needed tents</option><option value="requestedCots">Needed cots</option><option value="requestedFloorboards">Floorboards requested</option></select></div><div class="notice warn section"><span class="notice-icon">!</span><div><strong>Confirmation required</strong><p>The selected values will be replaced with zero and the current calculated plan will be cleared.</p></div></div>`,
-    actions: [{ label: 'Cancel', action: 'close-modal' }, { label: 'Zero selected column', action: 'confirm-zero-column', className: 'danger' }]
+    title: 'Clear or Zero Weekly Plan Fields',
+    body: `<p>Select any number of fields. Numeric values are set to zero, text is cleared, and dropdowns return to their default. Everything is unselected by default.</p><div class="bulk-field-list section">${fields.map(([id,label,kind]) => `<label class="estimate-review-row"><input type="checkbox" data-zero-field="${id}"> <span><strong>${label}</strong><small>${kind === 'zero' ? 'Set nonzero values to zero' : kind === 'clear' ? 'Clear entered text' : `Restore ${id === 'contact' ? 'Not Contacted' : 'Sunday'}`}</small></span></label>`).join('')}</div><div class="notice warn section"><span class="notice-icon">!</span><div><strong>Confirmation required</strong><p>Only selected fields with existing information will change. The operation can be undone as one action.</p></div></div>`,
+    actions: [{ label: 'Cancel', action: 'close-modal' }, { label: 'Apply selected changes', action: 'confirm-zero-column', className: 'danger' }]
   });
+}
+
+function permanentZeroReviewDialog() {
+  if (!pendingAttendanceReview) return;
+  const affected = Object.entries(pendingAttendanceReview.records).filter(([,record]) => requestBlank(record,'requestedTents') || requestBlank(record,'requestedCots'));
+  showModal({ title: 'Set Remaining Blank Requests to Zero?', body: `<div class="notice warn"><span class="notice-icon">!</span><div><strong>This permanently changes the Weekly Plan</strong><p>Blank request fields at ${affected.length} site${affected.length === 1 ? '' : 's'} will become intentional zeros and affect future calculations and printouts. Existing nonblank requests will not change. You can undo this action.</p></div></div><ul>${affected.map(([siteId,record]) => `<li>Site ${escapeHtml(siteById(siteId)?.label)}: ${[requestBlank(record,'requestedTents') ? 'Needed Tents' : '',requestBlank(record,'requestedCots') ? 'Needed Cots' : ''].filter(Boolean).join(' and ')}</li>`).join('')}</ul>`, actions: [{label:'Cancel',action:'close-modal'},{label:'Set blanks to zero',action:'confirm-permanent-zero-review',className:'danger'}] });
+  modalRoot.dataset.zeroReviewSites = JSON.stringify(affected.map(([siteId]) => siteId));
 }
 
 function zeroFinalColumnDialog() {
@@ -1479,7 +1826,15 @@ appElement.addEventListener('click', async (event) => {
   const action = actionTarget.dataset.action;
   const camp = activeCamp();
   const week = activeWeek();
-  if (action === 'calculate-plan') calculatePlan();
+  if (action === 'grid-tab') { gridFieldsTab = actionTarget.dataset.value; render(); }
+  else if (action === 'review-estimates') reviewEstimates();
+  else if (action === 'undo') undo();
+  else if (action === 'redo') redo();
+  else if (action === 'accept-estimate') {
+    const record = week.sites[actionTarget.dataset.siteId];
+    if (record && acceptEstimate(record, [actionTarget.dataset.estimateField])) finishWeeklyEdit();
+  }
+  else if (action === 'calculate-plan') calculatePlan();
   else if (action === 'save-now') await saveNow();
   else if (action === 'check-for-updates') await checkForUpdates(actionTarget);
   else if (action === 'toggle-theme') {
@@ -1506,6 +1861,9 @@ appElement.addEventListener('click', async (event) => {
   } else if (action === 'show-extras') {
     const items = extraEquipment(camp, week);
     showModal({ title: 'Extra equipment locator', body: items.length ? items.map((item) => `<div class="setting-row"><div class="setting-copy"><strong>${escapeHtml(item.hill)} · Site ${escapeHtml(item.site)}</strong><p>${item.quantity} extra ${escapeHtml(item.item)} · ${item.supplyTent ? `stored with ${item.supplyTent} supply tent${item.supplyTent === 1 ? '' : 's'}` : 'no supply tent recorded'}${item.scheduledOut ? ` · ${item.scheduledOut} scheduled to move out` : ' · available for an emergency shortage'}</p></div></div>`).join('') : `<p>${week.plan ? 'No extra tents or cots remain at sites in the current plan.' : 'Calculate changeover first to locate extra equipment.'}</p>`, actions: [{label:'Close',action:'close-modal',className:'primary'}] });
+  } else if (action === 'show-occupancy-warnings') {
+    const warnings = allSites(camp).map((site) => ({ site, warning: occupancyWarning(site, week.sites[site.id]) })).filter((item) => item.warning);
+    showModal({ title: 'Configured occupancy warnings', body: warnings.map(({site,warning}) => `<div class="setting-row"><div class="setting-copy"><strong>${escapeHtml(site.hillName)} · Site ${escapeHtml(site.label)}</strong><p>${warning.people} people recorded · maximum ${warning.maximum} · ${warning.over} over. Advisory only; nothing is blocked.</p></div></div>`).join('') || '<p>No sites exceed a configured maximum.</p>', actions: [{label:'Close',action:'close-modal',className:'primary'}] });
   } else if (action === 'clear-physical-recount') {
     camp.inventory.physicalBasementTents = null; camp.inventory.physicalBasementCots = null;
     camp.inventory.postRecountTentAdjustment = 0; camp.inventory.postRecountCotAdjustment = 0;
@@ -1538,12 +1896,12 @@ appElement.addEventListener('click', async (event) => {
       ]
     });
   } else if (action === 'print-packet') {
-    if (calculatePlan(false, { render: false, silent: true })) {
+    if (calculatePlan(false, { render: false, silent: true, afterReview: 'preview' })) {
       await saveNow();
       printPacket();
     }
   } else if (action === 'export-pdf-direct') {
-    if (calculatePlan(false, { render: false, silent: true })) {
+    if (calculatePlan(false, { render: false, silent: true, afterReview: 'export' })) {
       await saveNow();
       printPacket();
       await exportCurrentPacket('mixed');
@@ -1607,11 +1965,58 @@ appElement.addEventListener('click', async (event) => {
     if (state.camps.length === 1) { showToast('Add another camp before deleting the only one.', true); return; }
     showModal({ title: `Delete ${camp.name}?`, body: '<p>This removes every week, count, distance, and setting stored inside this camp. Export a backup first if you may need it later.</p>', actions: [{label:'Cancel',action:'close-modal'},{label:'Delete camp',action:'confirm-delete-camp',className:'danger'}] });
   } else if (action === 'restore-columns') { state.columns = restoreColumnDefaults(); queueSave(); render(); showToast('Default grid fields restored.'); }
+  else if (action === 'restore-weekly-fields') {
+    state.weeklyFields = Object.fromEntries(WEEKLY_FIELDS.map(([id, , visible]) => [id, visible]));
+    state.weeklyFieldLabels = Object.fromEntries(WEEKLY_FIELDS.map(([id, label]) => [id, label]));
+    queueSave(); render(); showToast('Default Weekly Plan fields restored.');
+  }
   else if (action === 'override-missing-counts') calculatePlan(false);
 });
 
+appElement.addEventListener('input', (event) => {
+  const scroll = event.target.closest('.weekly-scroll');
+  if (scroll && !weeklyInputView) weeklyInputView = { left: scroll.scrollLeft, top: scroll.scrollTop };
+});
+for (const eventName of ['pointerdown','keydown']) appElement.addEventListener(eventName, (event) => {
+  const scroll = event.target.closest?.('.weekly-scroll');
+  if (scroll) weeklyInputView = { left: scroll.scrollLeft, top: scroll.scrollTop };
+}, true);
+
 appElement.addEventListener('change', (event) => {
   const target = event.target;
+  commitEditHistory();
+  if (target.dataset.weeklyVisible) { state.weeklyFields[target.dataset.weeklyVisible] = target.checked; queueSave(); render(); return; }
+  if (target.dataset.weeklyLabel) {
+    const fallback = WEEKLY_FIELDS.find(([id]) => id === target.dataset.weeklyLabel)?.[1] || 'Field';
+    state.weeklyFieldLabels[target.dataset.weeklyLabel] = target.value.trim() || fallback;
+    queueSave(); render(); return;
+  }
+  if (target.dataset.attendanceField) {
+    const record = activeWeek().sites[target.dataset.siteId];
+    const troop = record.troops[Number(target.dataset.troopIndex) || 0];
+    troop.attendance[target.dataset.attendanceField] = n(target.value);
+    syncAttendanceSummary(record);
+    finishWeeklyEdit(true); return;
+  }
+  if (target.dataset.troopField) {
+    const record = activeWeek().sites[target.dataset.siteId];
+    record.troops[Number(target.dataset.troopIndex)][target.dataset.troopField] = target.value;
+    syncTroopSummary(record); finishWeeklyEdit(true); return;
+  }
+  if (target.dataset.troopCount) {
+    const record = activeWeek().sites[target.dataset.troopCount];
+    const count = Math.max(1, n(target.value));
+    if (count < record.troops.length) {
+      pendingTroopReduction = { siteId: target.dataset.troopCount, count };
+      showModal({ title: 'Choose which troops to keep', body: `<p>Select exactly ${count} troop record${count === 1 ? '' : 's'} to keep. Unselected records will be archived, not deleted, and can be restored if the troop count increases later.</p><div class="troop-keep-list">${record.troops.map((troop, index) => { const total = ATTENDANCE_FIELDS.reduce((sum, [key]) => sum + n(troop.attendance?.[key]), 0); return `<label class="estimate-review-row"><input type="checkbox" data-keep-troop-index="${index}" ${index < count ? 'checked' : ''}> <span><strong>${escapeHtml(troop.name || `Troop ${index + 1}`)}</strong><small>${escapeHtml(troop.arrival)} · ${escapeHtml(CONTACT_STATUSES.find(([id]) => id === troop.contact)?.[1] || troop.contact)} · ${total} people entered</small></span></label>`; }).join('')}</div><p class="selection-count" data-troop-selection-count>${count} of ${count} selected</p>`, actions: [{ label: 'Cancel', action: 'close-modal' }, { label: 'Keep selected troops', action: 'confirm-troop-reduction', className: 'primary' }] });
+      target.value = record.troops.length;
+    } else {
+      record.archivedTroops ||= [];
+      while (record.troops.length < count) record.troops.push(record.archivedTroops.shift() || { name: '', arrival: 'normal', contact: 'not-contacted', attendance: Object.fromEntries(ATTENDANCE_FIELDS.map(([key]) => [key, 0])) });
+      syncTroopSummary(record); finishWeeklyEdit();
+    }
+    return;
+  }
   if (target.dataset.supplyAdjustment) { commitSupplyAdjustment(target); return; }
   if (target.matches('[data-action="select-camp"]')) {
     state.activeCampId = target.value; state.activeWeekNumber = activeCamp().weeks[0].number; queueSave(); render(); return;
@@ -1722,7 +2127,15 @@ appElement.addEventListener('input', (event) => {
   }
 });
 
+appElement.addEventListener('focusin', (event) => captureEditHistory(event.target));
+
 appElement.addEventListener('keydown', (event) => {
+  const modifier = navigator.platform?.includes('Mac') ? event.metaKey : event.ctrlKey;
+  if (modifier && event.key.toLowerCase() === 'z') {
+    event.preventDefault();
+    if (event.shiftKey) redo(); else undo();
+    return;
+  }
   if (event.key === 'Enter' && event.target.dataset.supplyAdjustment) {
     event.preventDefault();
     commitSupplyAdjustment(event.target);
@@ -1749,12 +2162,56 @@ appElement.addEventListener('drop', (event) => {
   queueSave(); render();
 });
 
+modalRoot.addEventListener('input', (event) => {
+  const target = event.target;
+  if (target.dataset.reviewAttendance && pendingAttendanceReview) {
+    const record = pendingAttendanceReview.records[target.dataset.siteId];
+    record.troops[Number(target.dataset.troopIndex)].attendance[target.dataset.reviewAttendance] = n(target.value);
+    updateAttendanceReviewSummary(target.dataset.siteId);
+  }
+  if (target.dataset.reviewCustom && pendingAttendanceReview) {
+    const choice = pendingAttendanceReview.choices[target.dataset.siteId];
+    choice[target.dataset.reviewCustom] = n(target.value); choice.type = 'custom';
+    const radio = modalRoot.querySelector(`[data-review-choice="custom"][data-site-id="${target.dataset.siteId}"]`);
+    if (radio) radio.checked = true;
+  }
+});
+modalRoot.addEventListener('change', (event) => {
+  const target = event.target;
+  if (target.dataset.reviewChoice && pendingAttendanceReview) pendingAttendanceReview.choices[target.dataset.siteId].type = target.dataset.reviewChoice;
+  if (target.dataset.reviewMarkResponded && pendingAttendanceReview) pendingAttendanceReview.choices[target.dataset.reviewMarkResponded].markResponded = target.checked;
+  if (target.dataset.reviewMarkOpen && pendingAttendanceReview) pendingAttendanceReview.choices[target.dataset.reviewMarkOpen].markOpen = target.checked;
+});
+
 modalRoot.addEventListener('click', async (event) => {
-  if (event.target.matches('.modal-backdrop')) { closeModal(); return; }
+  if (event.target.matches('.modal-backdrop')) { pendingAttendanceReview = null; closeModal(); return; }
   const target = event.target.closest('button[data-action]');
   if (!target) return;
   const action = target.dataset.action;
   if (action === 'close-modal') closeModal();
+  else if (action === 'close-attendance-review') { pendingAttendanceReview = null; closeModal(); }
+  else if (action === 'apply-attendance-review') finishAttendanceReview(false);
+  else if (action === 'proceed-current-review') finishAttendanceReview(true);
+  else if (action === 'permanent-zero-review') permanentZeroReviewDialog();
+  else if (action === 'confirm-permanent-zero-review') {
+    const siteIds = JSON.parse(modalRoot.dataset.zeroReviewSites || '[]');
+    pushHistory('Set blank requests to zero');
+    for (const siteId of siteIds) {
+      const record = activeWeek().sites[siteId];
+      if (requestBlank(record,'requestedTents')) { record.requestedTents = 0; record.requestedTentsOverridden = true; }
+      if (requestBlank(record,'requestedCots')) { record.requestedCots = 0; record.requestedCotsOverridden = true; }
+    }
+    pendingAttendanceReview = null; activeWeek().plan = null; activeWeek().planStatus = 'draft'; closeModal(); queueSave(0); render(); showToast('Blank requests were recorded as zero. You can undo this action.');
+  }
+  else if (action === 'confirm-troop-reduction' && pendingTroopReduction) {
+    const { siteId, count } = pendingTroopReduction; const record = activeWeek().sites[siteId];
+    const keptIndexes = [...modalRoot.querySelectorAll('[data-keep-troop-index]:checked')].map((checkbox) => Number(checkbox.dataset.keepTroopIndex));
+    if (keptIndexes.length !== count) { showToast(`Select exactly ${count} troop record${count === 1 ? '' : 's'} to keep.`, true); return; }
+    const kept = record.troops.filter((troop, index) => keptIndexes.includes(index));
+    const archived = record.troops.filter((troop, index) => !keptIndexes.includes(index));
+    record.troops = kept; record.archivedTroops = [...archived, ...(record.archivedTroops || [])];
+    syncTroopSummary(record); pendingTroopReduction = null; closeModal(); finishWeeklyEdit();
+  }
   else if (action === 'download-update') {
     const updateUrl = modalRoot.dataset.updateUrl;
     try {
@@ -1787,14 +2244,38 @@ modalRoot.addEventListener('click', async (event) => {
     state.camps.push(camp); state.activeCampId = camp.id; state.activeWeekNumber = 1;
     closeModal(); queueSave(0); render(); showToast(`${camp.name} created with the saved distance grid.`);
   } else if (action === 'confirm-zero-column') {
-    const field = document.querySelector('#zero-column-field').value;
+    const fields = [...modalRoot.querySelectorAll('[data-zero-field]:checked')].map((box) => box.dataset.zeroField);
+    if (!fields.length) { showToast('Select at least one field.', true); return; }
+    pushHistory('Clear or zero Weekly Plan fields');
     for (const record of Object.values(activeWeek().sites)) {
-      record[field] = 0;
-      if (field === 'requestedTents' && !record.floorboardsOverridden) record.requestedFloorboards = 0;
-      if (field === 'requestedFloorboards') record.floorboardsOverridden = n(record.requestedTents) !== 0;
+      normalizeAttendance(record);
+      for (const field of fields) {
+        if (field.startsWith('attendance:')) {
+          const attendanceField = field.split(':')[1];
+          for (const troop of record.troops) troop.attendance[attendanceField] = 0;
+          syncAttendanceSummary(record);
+        } else if (field === 'troopName') {
+          for (const troop of record.troops) troop.name = '';
+          syncTroopSummary(record);
+        } else if (field === 'contact') {
+          for (const troop of record.troops) troop.contact = 'not-contacted';
+        } else if (field === 'arrival') {
+          for (const troop of record.troops) troop.arrival = 'normal';
+          syncTroopSummary(record);
+        } else if (field === 'specialRequest' || field === 'commissionerNotes') record[field] = '';
+        else {
+          record[field] = 0;
+          if (field === 'requestedTents' || field === 'requestedCots') {
+            record[`${field}Overridden`] = true;
+            if (record.requestSources) delete record.requestSources[field];
+          }
+          if (field === 'requestedTents' && !record.floorboardsOverridden) record.requestedFloorboards = 0;
+          if (field === 'requestedFloorboards') record.floorboardsOverridden = n(record.requestedTents) !== 0;
+        }
+      }
     }
     activeWeek().plan = null; activeWeek().planStatus = 'draft';
-    closeModal(); queueSave(0); render(); showToast('Selected weekly column set to zero.');
+    closeModal(); queueSave(0); render(); showToast(`${fields.length} Weekly Plan field${fields.length === 1 ? '' : 's'} cleared or zeroed. You can undo this action.`);
   } else if (action === 'confirm-zero-final-column') {
     const field = document.querySelector('#zero-final-column-field').value;
     for (const record of Object.values(activeWeek().sites)) record[field] = 0;
@@ -1855,6 +2336,14 @@ printRoot.addEventListener('click', async (event) => {
     queueSave(0);
     printPacket();
     await exportCurrentPacket(layout);
+  }
+});
+
+modalRoot.addEventListener('change', (event) => {
+  if (event.target.matches('[data-keep-troop-index]') && pendingTroopReduction) {
+    const selected = modalRoot.querySelectorAll('[data-keep-troop-index]:checked').length;
+    const count = modalRoot.querySelector('[data-troop-selection-count]');
+    if (count) count.textContent = `${selected} of ${pendingTroopReduction.count} selected`;
   }
 });
 
