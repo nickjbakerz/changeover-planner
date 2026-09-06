@@ -26,8 +26,9 @@ module.exports = {
         language: 1033,
         exe: 'Changeover Planner.exe',
         icon: path.resolve(__dirname, 'src/assets/app-icon.ico'),
-        defaultInstallMode: 'perUser',
-        ui: { chooseDirectory: true }
+        arch: 'x64',
+        defaultInstallMode: 'perMachine',
+        ui: false
       }
     },
     {

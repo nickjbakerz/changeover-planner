@@ -262,8 +262,16 @@ function createWindow() {
   });
 
   window.removeMenu();
-  window.loadFile(path.join(__dirname, 'index.html'));
+  const showFallback = setTimeout(() => {
+    if (!window.isDestroyed() && !window.isVisible()) window.show();
+  }, 3000);
+
+  window.loadFile(path.join(__dirname, 'index.html')).catch((error) => {
+    if (!window.isDestroyed()) window.show();
+    dialog.showErrorBox('Changeover Planner could not open', `The main screen could not be loaded.\n\n${error?.message || String(error)}`);
+  });
   window.once('ready-to-show', () => window.show());
+  window.once('closed', () => clearTimeout(showFallback));
   window.webContents.setWindowOpenHandler(({ url }) => {
     if (/^(https:\/\/|mailto:|tel:)/i.test(url)) shell.openExternal(url);
     return { action: 'deny' };
