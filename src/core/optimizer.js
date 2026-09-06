@@ -279,8 +279,20 @@ export function optimizeWeek(camp, week, advanced) {
   const decisions = [];
   const hillPlans = [];
   let basement = expectedBasement(camp, week);
+  const inventoryUnknown = {
+    tents: camp.inventory.physicalBasementTents === null && !camp.inventory.startingTentsConfigured && amount(camp.inventory.startingTents) === 0,
+    cots: camp.inventory.physicalBasementCots === null && !camp.inventory.startingCotsConfigured && amount(camp.inventory.startingCots) === 0
+  };
+  const weeklyRecords = Object.values(week.sites);
+  if (inventoryUnknown.tents) basement.tents = weeklyRecords.reduce((sum, record) => sum + requirementFor(record, 'tents') + 2, 0);
+  if (inventoryUnknown.cots) basement.cots = weeklyRecords.reduce((sum, record) => sum + requirementFor(record, 'cots'), 0);
   const basementStart = { ...basement };
   const crossHillNeeds = [];
+
+  if (inventoryUnknown.tents || inventoryUnknown.cots) {
+    const missing = [inventoryUnknown.tents ? 'tent' : '', inventoryUnknown.cots ? 'cot' : ''].filter(Boolean).join(' and ');
+    warnings.push(`Beginning ${missing} inventory is not configured. Site changes and required storage deliveries were calculated, but storage availability cannot be confirmed until the inventory is entered.`);
+  }
 
   for (const hill of camp.hills) {
     const sites = [...hill.sites].sort(siteSort);
@@ -648,6 +660,7 @@ export function optimizeWeek(camp, week, advanced) {
     crossHillNeeds,
     basementStart,
     basementAfter: basement,
+    inventoryUnknown,
     hillPlans,
     hillStats,
     difficulty: hillStats.reduce((sum, stat) => sum + stat.difficulty, 0),

@@ -2,6 +2,13 @@ import { normalizeAttendance, OPTIONAL_PRINT_COLUMNS, WEEKLY_FIELDS } from './at
 
 export const DATA_VERSION = 12;
 
+// Advisory capacities copied from Nick's live Camp Blackhawk setup.
+const BLACKHAWK_MAXIMUM_OCCUPANCY = {
+  1: 50, 2: 60, 3: 62, 4: 60, 5: 50, 6: 50, 7: 60, 8: 60,
+  9: 60, 10: 52, 11: 50, 12: 40, 13: 62, 14: 35, 15: 50,
+  16: 50, 17: 40, 18: 45, 19: 50, 20: 60, 21: 35
+};
+
 export const DEFAULT_COLUMNS = [
   { id: 'site', label: 'Site', help: 'The campsite name or number.', visible: true, locked: true },
   { id: 'completed', label: 'Completed', help: 'A blank paper checkbox for the hill team.', visible: true },
@@ -149,6 +156,8 @@ export function createCamp({ name, year = new Date().getFullYear(), weekCount = 
       storageLocation: 'Basement',
       startingTents: 0,
       startingCots: 0,
+      startingTentsConfigured: false,
+      startingCotsConfigured: false,
       tentAdjustment: 0,
       cotAdjustment: 0,
       postRecountTentAdjustment: 0,
@@ -217,7 +226,7 @@ export function createBlackhawkCamp() {
     hills: hillSpecs.map(([name, labels]) => ({
       id: `hill-${name.toLowerCase()}`,
       name,
-      sites: labels.map((label) => ({ id: `site-${label}`, label })),
+      sites: labels.map((label) => ({ id: `site-${label}`, label, maximumOccupancy: BLACKHAWK_MAXIMUM_OCCUPANCY[label] || 0 })),
       distances: { ...blankDistances(labels), ...BLACKHAWK_DISTANCES[name] }
     }))
   });
@@ -264,7 +273,9 @@ export function createNextSeason(sourceCamp, year) {
     ...camp.inventory,
     storageLocation: sourceCamp.inventory?.storageLocation || 'Basement',
     startingTents: Number(sourceCamp.inventory?.startingTents) || 0,
-    startingCots: Number(sourceCamp.inventory?.startingCots) || 0
+    startingCots: Number(sourceCamp.inventory?.startingCots) || 0,
+    startingTentsConfigured: Boolean(sourceCamp.inventory?.startingTentsConfigured || Number(sourceCamp.inventory?.startingTents) > 0),
+    startingCotsConfigured: Boolean(sourceCamp.inventory?.startingCotsConfigured || Number(sourceCamp.inventory?.startingCots) > 0)
   };
   return camp;
 }

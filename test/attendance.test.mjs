@@ -99,12 +99,12 @@ test('shared-site early arrival prepares full site and stayover requires all tro
   row.troops[0].arrival = 'stayover'; syncTroopSummary(row); assert.equal(row.arrival, 'stayover');
 });
 
-test('site maximum occupancy defaults to advisory-off without changing attendance estimates', () => {
+test('Blackhawk site capacity remains advisory and does not change attendance estimates', () => {
   const data = createDefaultData();
   const camp = data.camps[0];
   const site = camp.hills[0].sites[0];
   const record = camp.weeks[0].sites[site.id];
-  assert.equal(site.maximumOccupancy, 0);
+  assert.equal(site.maximumOccupancy, 50);
   record.troops[0].attendance.maleYouth = 5;
   assert.deepEqual(attendanceEstimate(record), { tents: 3, cots: 5 });
   site.maximumOccupancy = 4;

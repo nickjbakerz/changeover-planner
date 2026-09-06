@@ -51,6 +51,46 @@ test('Blackhawk defaults preserve the corrected hill name and 21 sites', () => {
   assert.equal(camp.hills[0].distances[distanceKey('site-4', 'site-8')], 1200);
   assert.equal(camp.hills[1].distances[distanceKey('site-9', 'site-15')], 605);
   assert.equal(camp.hills[2].distances[distanceKey('site-20', 'site-21')], 1539);
+  assert.deepEqual(
+    camp.hills.flatMap((hill) => hill.sites.map((site) => site.maximumOccupancy)),
+    [50, 60, 62, 60, 50, 50, 60, 60, 60, 52, 50, 40, 62, 35, 50, 50, 40, 45, 50, 60, 35]
+  );
+});
+
+test('unconfigured storage inventory still calculates requested site changes', () => {
+  const camp = createCamp({
+    name: 'Fresh Install',
+    weekCount: 1,
+    hills: [{ id: 'hill', name: 'Hill', sites: [{ id: 'site', label: '1' }], distances: {} }]
+  });
+  const record = camp.weeks[0].sites.site;
+  record.requestedTents = 6;
+  record.requestedCots = 11;
+  const plan = optimizeWeek(camp, camp.weeks[0], advanced);
+  assert.equal(record.plannedTotalTents, 6);
+  assert.equal(record.plannedCots, 11);
+  assert.deepEqual(plan.inventoryUnknown, { tents: true, cots: true });
+  assert.ok(plan.commands.some((command) => command.type === 'basement' && command.tents === 6 && command.cots === 11));
+  assert.match(plan.warnings.join(' '), /inventory is not configured/i);
+});
+
+test('a deliberately configured zero inventory remains a real shortage', () => {
+  const camp = createCamp({
+    name: 'Empty Storage',
+    weekCount: 1,
+    hills: [{ id: 'hill', name: 'Hill', sites: [{ id: 'site', label: '1' }], distances: {} }]
+  });
+  camp.inventory.startingTentsConfigured = true;
+  camp.inventory.startingCotsConfigured = true;
+  const record = camp.weeks[0].sites.site;
+  record.requestedTents = 2;
+  record.requestedCots = 4;
+  const plan = optimizeWeek(camp, camp.weeks[0], advanced);
+  assert.deepEqual(plan.inventoryUnknown, { tents: false, cots: false });
+  assert.equal(record.plannedTotalTents, 0);
+  assert.equal(record.plannedCots, 0);
+  assert.ok(plan.crossHillNeeds.some((need) => need.item === 'tents'));
+  assert.ok(plan.crossHillNeeds.some((need) => need.item === 'cots'));
 });
 
 test('zero requested tents with requested cots adds one storage tent', () => {
@@ -271,6 +311,8 @@ test('cross-hill surplus is only turned into a command after commissioner approv
     ]
   });
   const week = camp.weeks[0];
+  camp.inventory.startingTentsConfigured = true;
+  camp.inventory.startingCotsConfigured = true;
   week.sites.n1.currentTotalTents = 10;
   week.sites.s1.requestedTents = 4;
   const plan = optimizeWeek(camp, week, advanced);

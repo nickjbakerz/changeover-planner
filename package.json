@@ -1,7 +1,7 @@
 {
   "name": "camp-changeover-planner",
   "productName": "Changeover Planner",
-  "version": "0.10.2",
+  "version": "0.10.3",
   "description": "Offline camp equipment planning for weekly changeover.",
   "repository": {
     "type": "git",

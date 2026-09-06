@@ -35,7 +35,7 @@ async function loadLatestRelease() {
     setDownload('macIntel', 'download-mac-intel', 'meta-mac-intel', release, `Intel · Version ${version}`);
     setDownload('linux', 'download-linux', 'meta-linux', release, `Version ${version} · ZIP package`);
   } catch {
-    document.getElementById('release-status').textContent = 'Version 0.10.2 is ready to download';
+    document.getElementById('release-status').textContent = 'Version 0.10.3 is ready to download';
   }
 }
 

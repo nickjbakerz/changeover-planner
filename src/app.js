@@ -51,7 +51,7 @@ let redoStack = [];
 let pendingEditHistory = null;
 const HISTORY_LIMIT = 100;
 
-const APP_VERSION = '0.10.2';
+const APP_VERSION = '0.10.3';
 const icons = {
   overview: '🏠', plan: '📋', counts: '✓', statistics: '📊', print: '🖨', advanced: '⚙', help: '?'
 };
@@ -68,6 +68,13 @@ function escapeHtml(value) {
 function n(value) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : 0;
+}
+
+function storageInventoryConfigured(camp, item) {
+  const suffix = item === 'tents' ? 'Tents' : 'Cots';
+  return Boolean(camp.inventory[`starting${suffix}Configured`]
+    || n(camp.inventory[`starting${suffix}`]) > 0
+    || camp.inventory[`physicalBasement${suffix}`] !== null);
 }
 
 function signed(value) {
@@ -157,6 +164,8 @@ function normalizeLoadedData(loaded) {
     camp.year ??= Number(String(camp.name || '').match(/\b(20\d{2})\b/)?.[1]) || 2026;
     camp.inventory = {
       storageLocation: 'Basement', startingTents: 0, startingCots: 0, tentAdjustment: 0, cotAdjustment: 0,
+      startingTentsConfigured: Number(camp.inventory?.startingTents) > 0,
+      startingCotsConfigured: Number(camp.inventory?.startingCots) > 0,
       postRecountTentAdjustment: 0, postRecountCotAdjustment: 0,
       physicalBasementTents: null, physicalBasementCots: null, adjustmentNote: '',
       ...(camp.inventory || {})
@@ -537,11 +546,13 @@ function renderOverview(camp, week) {
   const extraTotal = extras.reduce((sum, item) => sum + item.quantity, 0);
   const overCapacity = allSites(camp).map((site) => ({ site, warning: occupancyWarning(site, week.sites[site.id]) })).filter((item) => item.warning);
   const storage = escapeHtml(camp.inventory.storageLocation || 'Basement');
+  const storageMissing = !storageInventoryConfigured(camp, 'tents') || !storageInventoryConfigured(camp, 'cots');
   return `
     <div class="page-head">
       <div><div class="eyebrow">${escapeHtml(campDisplayName(camp))} · ${escapeHtml(week.name)}</div><h1>Changeover at a glance</h1><p class="subtitle">Enter troop requests, calculate the shortest same-hill moves, then print clean directions for each hill.</p></div>
       <div class="button-row"><button class="btn primary" data-route="plan">Open weekly plan →</button></div>
     </div>
+    ${storageMissing ? `<div class="notice warn section"><span class="notice-icon">!</span><div><strong>${storage} inventory has not been configured</strong><p>The planner can still calculate site changes and required deliveries, but it cannot confirm that enough equipment is available. Enter beginning-of-season inventory or a physical recount in Inventory.</p><button class="btn small" data-config-page="inventory">Enter inventory</button></div></div>` : ''}
     <div class="overview-alerts section"><button class="card overview-link" data-action="show-red-tags"><span><strong>${redTagTotal} Red Tag item${redTagTotal === 1 ? '' : 's'}</strong><small>${redTagTotal ? 'See the recorded sites and equipment.' : 'No Red Tag items recorded this week.'}</small></span><b>View →</b></button><button class="card overview-link" data-action="show-extras"><span><strong>${extraTotal} extra item${extraTotal === 1 ? '' : 's'} available</strong><small>${week.plan ? 'Find emergency equipment by hill and site.' : 'Calculate the week to locate available extras.'}</small></span><b>View →</b></button>${overCapacity.length ? `<button class="card overview-link warning-link" data-action="show-occupancy-warnings"><span><strong>${overCapacity.length} site${overCapacity.length === 1 ? '' : 's'} over configured occupancy</strong><small>Advisory only; planning is never blocked.</small></span><b>View →</b></button>` : ''}</div>
     <div class="grid four">
       <div class="card stat"><div class="stat-label">Requested equipment</div><div class="stat-pair"><strong>${totals.requestedTents}<small>tents</small></strong><strong>${totals.requestedCots}<small>cots</small></strong></div></div>
@@ -818,7 +829,10 @@ function renderPlan(camp, week) {
   const legacy = allSites(camp).filter((site) => n(week.sites[site.id].legacyHeadcount) > 0);
   const previous = previousWeekStatus(camp, week);
   const review = reviewSummary();
+  const storage = escapeHtml(camp.inventory.storageLocation || 'Basement');
+  const storageMissing = !storageInventoryConfigured(camp, 'tents') || !storageInventoryConfigured(camp, 'cots');
   return `<div class="page-head"><div><div class="eyebrow">Requests and current inventory</div><h1>Weekly plan</h1><p class="subtitle">Track each troop, then review requests and attendance estimates.</p><button class="review-status-summary" data-action="review-estimates"><strong>${review.sites ? `${review.sites} site${review.sites === 1 ? '' : 's'} need review` : 'Attendance review clear'}</strong>${review.sites ? ` · ${review.waiting} waiting · ${review.notContacted} not contacted · ${review.blank} blank request${review.blank === 1 ? '' : 's'}` : ''}${review.over ? ` · ${review.over} over occupancy` : ''}</button></div><div class="button-row"><button class="btn" data-action="review-estimates">Review attendance estimates</button><button class="btn" data-action="zero-column">Clear or Zero Fields…</button><button class="btn primary" data-action="calculate-plan">Calculate changeover</button></div></div>
+    ${storageMissing ? `<div class="notice warn"><span class="notice-icon">!</span><div><strong>Enter ${storage} inventory to verify availability</strong><p>Requested tent and cot changes will still calculate. Until inventory is entered, storage deliveries are requirements—not confirmation that the equipment is available.</p><button class="btn small" data-config-page="inventory">Enter inventory</button></div></div>` : ''}
     ${week.number > 1 && !previous.ready ? `<div class="notice warn"><div><strong>Previous final counts are incomplete.</strong><p>Requests can still be entered. Calculating will offer an override when needed.</p><button class="btn small" data-route="counts">Enter final counts</button></div></div>` : ''}
     ${legacy.length ? `<details class="section"><summary>Older Unclassified Attendance Data</summary><p>These totals were saved before attendance was divided into Male Leaders, Female Leaders, Male Youth, and Female Youth. The planner preserves them so older information is not lost, but it will not guess the breakdown. Leave them alone if they are only test data.</p>${legacy.map((site) => `<div>Site ${escapeHtml(site.label)}: ${n(week.sites[site.id].legacyHeadcount)} people</div>`).join('')}</details>` : ''}
     <div class="table-shell section weekly-scroll" tabindex="0" aria-label="Weekly plan; scroll for additional sites and columns"><table class="weekly-table"><thead><tr>${fields.map(([id, defaultLabel]) => { const label = state.weeklyFieldLabels[id] || defaultLabel; return `<th class="weekly-col-${id}">${escapeHtml(label)}${({troopCount:'How many separate troops are sharing this site. The default is one.',troopName:'Each troop name or number at this site.',arrival:'Sunday, Early, or Stayover for each troop.',contact:'Track each troop as Not Contacted, Waiting for Numbers, or Responded.',maleLeaders:'Optional attendance for each troop. Each troop and sleeping group is rounded separately when suggesting tents.',femaleLeaders:'Optional attendance for each troop. Each troop and sleeping group is rounded separately when suggesting tents.',maleYouth:'Optional attendance for each troop. Each troop and sleeping group is rounded separately when suggesting tents.',femaleYouth:'Optional attendance for each troop. Each troop and sleeping group is rounded separately when suggesting tents.',requestedTents:`The suggested value is the minimum number of tents needed while following Scouting America's Youth Protection and tenting guidelines.`,requestedCots:`The suggested value is the minimum number of cots needed while following Scouting America's Youth Protection and tenting guidelines.`,specialRequest:'Printed for hill team leaders when the Notes field is enabled under Printed Grid Fields.',commissionerNotes:'Private by default. It only prints when explicitly enabled under Printed Grid Fields.'}[id] ? inlineHelp(label, {troopCount:'How many separate troops are sharing this site. The default is one.',troopName:'Each troop name or number at this site.',arrival:'Sunday, Early, or Stayover for each troop.',contact:'Track each troop as Not Contacted, Waiting for Numbers, or Responded.',maleLeaders:'Optional attendance for each troop. Each troop and sleeping group is rounded separately when suggesting tents.',femaleLeaders:'Optional attendance for each troop. Each troop and sleeping group is rounded separately when suggesting tents.',maleYouth:'Optional attendance for each troop. Each troop and sleeping group is rounded separately when suggesting tents.',femaleYouth:'Optional attendance for each troop. Each troop and sleeping group is rounded separately when suggesting tents.',requestedTents:`The suggested value is the minimum number of tents needed while following Scouting America's Youth Protection and tenting guidelines.`,requestedCots:`The suggested value is the minimum number of cots needed while following Scouting America's Youth Protection and tenting guidelines.`,specialRequest:'Printed for hill team leaders when the Notes field is enabled under Printed Grid Fields.',commissionerNotes:'Private by default. It only prints when explicitly enabled under Printed Grid Fields.'}[id]) : '')}</th>`; }).join('')}</tr></thead><tbody>${rows}</tbody></table></div>
@@ -2049,6 +2063,8 @@ appElement.addEventListener('change', (event) => {
     if (oldValue === nextValue) return;
     if (target.dataset.inventoryField === 'physicalBasementTents') activeCamp().inventory.postRecountTentAdjustment = 0;
     if (target.dataset.inventoryField === 'physicalBasementCots') activeCamp().inventory.postRecountCotAdjustment = 0;
+    if (target.dataset.inventoryField === 'startingTents') activeCamp().inventory.startingTentsConfigured = true;
+    if (target.dataset.inventoryField === 'startingCots') activeCamp().inventory.startingCotsConfigured = true;
     activeCamp().inventory[target.dataset.inventoryField] = nextValue; queueSave(); refreshLiveInventory(); scheduleCalculation(); return;
   }
   if (target.dataset.commandVisible) {
@@ -2122,6 +2138,8 @@ appElement.addEventListener('input', (event) => {
     const nullable = ['physicalBasementTents','physicalBasementCots'];
     if (target.dataset.inventoryField === 'physicalBasementTents') activeCamp().inventory.postRecountTentAdjustment = 0;
     if (target.dataset.inventoryField === 'physicalBasementCots') activeCamp().inventory.postRecountCotAdjustment = 0;
+    if (target.dataset.inventoryField === 'startingTents') activeCamp().inventory.startingTentsConfigured = true;
+    if (target.dataset.inventoryField === 'startingCots') activeCamp().inventory.startingCotsConfigured = true;
     activeCamp().inventory[target.dataset.inventoryField] = nullable.includes(target.dataset.inventoryField) && target.value === '' ? null : (target.type === 'number' ? Number(target.value || 0) : target.value);
     queueSave(); refreshLiveInventory(); scheduleCalculation();
   }
