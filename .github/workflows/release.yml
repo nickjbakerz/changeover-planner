@@ -44,10 +44,6 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
       - run: pnpm test
-      - name: Install WiX Toolset
-        if: matrix.platform == 'win32'
-        shell: powershell
-        run: choco install wixtoolset --version=3.14.0 -y --no-progress
       - run: pnpm exec electron-forge make --platform=${{ matrix.platform }} --arch=${{ matrix.arch }}
       - uses: actions/upload-artifact@v4
         with:
