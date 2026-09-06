@@ -67,7 +67,7 @@ jobs:
         run: |
           cp "$(find release-files -type f -name '*-arm64.dmg' -print -quit)" release-files/Changeover-Planner-Mac-Apple-Silicon.dmg
           cp "$(find release-files -type f -name '*-x64.dmg' -print -quit)" release-files/Changeover-Planner-Mac-Intel.dmg
-          cp "$(find release-files -type f -name '*.Setup.exe' -print -quit)" release-files/Changeover-Planner-Windows-Setup.exe
+          cp "$(find release-files -type f -name '*Setup.exe' -print -quit)" release-files/Changeover-Planner-Windows-Setup.exe
           cp "$(find release-files -type f -name '*linux-x64*.zip' -print -quit)" release-files/Changeover-Planner-Linux-x64.zip
           mapfile -d '' files < <(find release-files -type f -print0)
           gh release create "${GITHUB_REF_NAME}" "${files[@]}" --repo "${GITHUB_REPOSITORY}" --title "Changeover Planner ${GITHUB_REF_NAME}" --generate-notes --latest
